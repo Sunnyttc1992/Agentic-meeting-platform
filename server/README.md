@@ -32,6 +32,14 @@ Open **Test secure recording**, grant consent for both participants, record, sto
 | `WHISPER_LANGUAGE` | `en` | Spoken language |
 | `MEETING_PROCESSOR` | `local` | Set to `fake` for the deterministic development processor |
 
+Meetings, consent, transcripts, action plans, and the audit trail are saved in `.data/meeting-ledger.sqlite`, so they survive a restart. Recording audio is stored encrypted (AES-256-GCM) with a key generated on first run at `.data/keys/recording-audio-v1.key`.
+
+- **Back up the key file.** If it is lost, stored audio can no longer be decrypted (transcripts and summaries are unaffected).
+- **Never commit or share `.data/`.**
+- **To start over,** stop the server and delete `.data/`.
+- **Interrupted jobs:** a job interrupted by a restart comes back as "Processing failed" with **Retry**.
+- **Other locations:** `MEETING_DATA_DIR` points the server at another folder. `npm run dev` uses `.data/vite-dev/`.
+
 Recordings up to about 80 minutes are accepted. Data flow, controls, and the remaining blockers to wider delivery are documented in [docs/security/local-meeting-pipeline.md](../docs/security/local-meeting-pipeline.md).
 
 ### Check pipeline readiness without processing a meeting

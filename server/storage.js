@@ -214,6 +214,27 @@ function assertTenantRecordList(scope, records, label) {
   return records
 }
 
+// Validates and canonicalizes one outbox row. Shared by every backend so the
+// tenant binding, required fields, and stored shape cannot drift.
+export function canonicalOutboxEvent(scope, event) {
+  const normalized = tenantScope(scope)
+  assertTenantRecord(normalized, event, 'outbox event')
+  invariant(typeof event.idempotencyKey === 'string' && event.idempotencyKey.trim().length > 0,
+    'INVALID_OUTBOX_EVENT', 'Outbox events require an idempotency key')
+  invariant(typeof event.type === 'string' && event.type.trim().length > 0,
+    'INVALID_OUTBOX_EVENT', 'Outbox events require a type')
+  return Object.freeze(structuredClone({
+    id: event.id ?? `outbox:${event.idempotencyKey}`,
+    tenantId: normalized.tenantId,
+    type: event.type,
+    idempotencyKey: event.idempotencyKey,
+    aggregateType: event.aggregateType ?? 'meeting',
+    aggregateId: event.aggregateId ?? null,
+    payload: event.payload ?? {},
+    occurredAt: event.occurredAt ?? new Date().toISOString(),
+  }))
+}
+
 // A deliberately small outbox representation. It is not a queue and does not
 // deliver events; it lets the prototype exercise the exact idempotency and
 // tenant-binding rules a transactional database outbox will enforce later.
@@ -222,24 +243,10 @@ export class InMemoryOutboxRepository {
 
   enqueue(scope, event) {
     const normalized = tenantScope(scope)
-    assertTenantRecord(normalized, event, 'outbox event')
-    invariant(typeof event.idempotencyKey === 'string' && event.idempotencyKey.trim().length > 0,
-      'INVALID_OUTBOX_EVENT', 'Outbox events require an idempotency key')
-    invariant(typeof event.type === 'string' && event.type.trim().length > 0,
-      'INVALID_OUTBOX_EVENT', 'Outbox events require a type')
-    const key = `${normalized.tenantId}:${event.idempotencyKey}`
+    const stored = canonicalOutboxEvent(normalized, event)
+    const key = `${normalized.tenantId}:${stored.idempotencyKey}`
     const existing = this.#events.get(key)
     if (existing) return structuredClone(existing)
-    const stored = Object.freeze(structuredClone({
-      id: event.id ?? `outbox:${event.idempotencyKey}`,
-      tenantId: normalized.tenantId,
-      type: event.type,
-      idempotencyKey: event.idempotencyKey,
-      aggregateType: event.aggregateType ?? 'meeting',
-      aggregateId: event.aggregateId ?? null,
-      payload: event.payload ?? {},
-      occurredAt: event.occurredAt ?? new Date().toISOString(),
-    }))
     this.#events.set(key, stored)
     return structuredClone(stored)
   }
@@ -252,6 +259,132 @@ export class InMemoryOutboxRepository {
   }
   snapshot() { return structuredClone(this.#events) }
   restore(snapshot) { this.#events = structuredClone(snapshot) }
+}
+
+// The one tenant facade shape, shared by every storage backend. Repositories
+// use the in-memory adapter signatures; this layer adds the tenant binding and
+// record checks, so a durable backend inherits them rather than re-implementing
+// them.
+function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxEnqueue = null } = {}) {
+  const normalized = tenantScope(scope)
+  const { tenantId } = normalized
+  const requireRecording = (recordingId) => {
+    const record = repositories.recordings.get(recordingId)
+    invariant(record && record.tenantId === tenantId, 'TENANT_SCOPE_VIOLATION', 'Recording must remain inside the active tenant scope', 403)
+    return record
+  }
+  const meetings = {
+    get: (meetingId) => repositories.meetings.get(tenantId, meetingId),
+    list: () => repositories.meetings.list(tenantId),
+  }
+  const knowledge = {
+    forMeeting: (meetingId) => repositories.knowledge.forMeeting(tenantId, meetingId),
+    meetingIdsMatching: (query) => repositories.knowledge.meetingIdsMatching(tenantId, query),
+  }
+  const recordings = {
+    get: (recordingId) => {
+      const record = repositories.recordings.get(recordingId)
+      return record?.tenantId === tenantId ? record : null
+    },
+    listForMeeting: (meetingId) => repositories.recordings.listForMeeting(tenantId, meetingId),
+  }
+  const audit = {
+    forMeeting: (meetingId) => repositories.audit.forMeeting(tenantId, meetingId),
+    chain: () => repositories.audit.chain(tenantId),
+  }
+  const commitments = {
+    query: (query = '') => repositories.commitments.query(tenantId, query),
+  }
+  const outbox = {
+    list: () => repositories.outbox.list(normalized),
+  }
+
+  if (writable) {
+    meetings.save = (record) => {
+      assertTenantRecord(normalized, record, 'meeting')
+      return repositories.meetings.save(record)
+    }
+    knowledge.addSegments = (records) => {
+      assertTenantRecordList(normalized, records, 'transcript segment')
+      return repositories.knowledge.addSegments(records)
+    }
+    knowledge.addAssertions = (records) => {
+      assertTenantRecordList(normalized, records, 'knowledge assertion')
+      return repositories.knowledge.addAssertions(records)
+    }
+    knowledge.clearMeeting = (meetingId) => repositories.knowledge.clearMeeting(tenantId, meetingId)
+    recordings.save = (record) => {
+      assertTenantRecord(normalized, record, 'recording')
+      const existing = repositories.recordings.get(record.id)
+      invariant(!existing || existing.tenantId === tenantId, 'TENANT_SCOPE_VIOLATION', 'Recording must remain inside the active tenant scope', 403)
+      return repositories.recordings.save(record)
+    }
+    recordings.putBytes = (recordingId, bytes) => {
+      requireRecording(recordingId)
+      return repositories.recordings.putBytes(recordingId, bytes)
+    }
+    recordings.getBytes = (recordingId) => {
+      requireRecording(recordingId)
+      return repositories.recordings.getBytes(recordingId)
+    }
+    recordings.clearContent = (recordingId) => {
+      requireRecording(recordingId)
+      return repositories.recordings.clearContent(recordingId)
+    }
+    audit.append = (event) => {
+      assertTenantRecord(normalized, event, 'audit event')
+      return repositories.audit.append(event)
+    }
+    commitments.replaceMeeting = (meetingId, knowledgeForMeeting) => {
+      const segments = knowledgeForMeeting?.segments ?? []
+      const assertions = knowledgeForMeeting?.assertions ?? []
+      assertTenantRecordList(normalized, segments, 'transcript segment')
+      assertTenantRecordList(normalized, assertions, 'knowledge assertion')
+      invariant(segments.every((item) => item.meetingId === meetingId) && assertions.every((item) => item.meetingId === meetingId),
+        'TENANT_SCOPE_VIOLATION', 'Commitments must remain inside the active meeting scope', 403)
+      return repositories.commitments.replaceMeeting(tenantId, meetingId, knowledgeForMeeting)
+    }
+    commitments.clearMeeting = (meetingId) => repositories.commitments.clearMeeting(tenantId, meetingId)
+    outbox.enqueue = (event) => {
+      assertTenantRecord(normalized, event, 'outbox event')
+      // The injector exists solely to exercise the prototype transaction
+      // boundary. It runs before the insert, so a thrown failure is covered
+      // by the composition root's rollback below.
+      if (beforeOutboxEnqueue?.(structuredClone(event))) {
+        throw new Error('Injected outbox enqueue failure')
+      }
+      return repositories.outbox.enqueue(normalized, event)
+    }
+  }
+
+  return createTenantStorageFacade(normalized, {
+    meetings,
+    knowledge,
+    recordings,
+    audit,
+    commitments,
+    outbox,
+  }, { writable })
+}
+
+// Composes repositories with the in-memory signatures into a validated storage
+// bundle. `runAtomically(work)` must run `work` synchronously and either keep
+// everything it wrote or roll all of it back.
+export function composeRepositoryStorage({ kind, repositories, runAtomically, beforeOutboxEnqueue = null }) {
+  invariant(typeof runAtomically === 'function', 'INVALID_STORAGE_ADAPTER', 'Storage backends must provide an atomic transaction runner')
+  const scopedFacade = (scope, options = {}) => tenantFacadeOver(repositories, scope, { ...options, beforeOutboxEnqueue })
+  return createMeetingStorageBundle({
+    kind,
+    scope: (scope) => scopedFacade(scope),
+    transaction: (scope, operation) => {
+      const normalized = tenantScope(scope)
+      return runAtomically(() => {
+        const result = operation(scopedFacade(normalized, { writable: true }))
+        invariant(!(result && typeof result.then === 'function'), 'ASYNC_STORAGE_TRANSACTION_UNSUPPORTED', 'Storage transactions must complete synchronously', 400)
+        return result
+      })
+    },
+  })
 }
 
 // Prototype-only composition root. This preserves existing in-memory behavior
@@ -273,124 +406,18 @@ export function createInMemoryMeetingStorage({ shouldFailOutboxEnqueue = null } 
     commitments: new InMemoryCommitmentRegistry(),
     outbox: new InMemoryOutboxRepository(),
   }
-
-  function scopedFacade(scope, { writable = false } = {}) {
-    const normalized = tenantScope(scope)
-    const { tenantId } = normalized
-    const requireRecording = (recordingId) => {
-      const record = repositories.recordings.get(recordingId)
-      invariant(record && record.tenantId === tenantId, 'TENANT_SCOPE_VIOLATION', 'Recording must remain inside the active tenant scope', 403)
-      return record
-    }
-    const meetings = {
-      get: (meetingId) => repositories.meetings.get(tenantId, meetingId),
-      list: () => repositories.meetings.list(tenantId),
-    }
-    const knowledge = {
-      forMeeting: (meetingId) => repositories.knowledge.forMeeting(tenantId, meetingId),
-      meetingIdsMatching: (query) => repositories.knowledge.meetingIdsMatching(tenantId, query),
-    }
-    const recordings = {
-      get: (recordingId) => {
-        const record = repositories.recordings.get(recordingId)
-        return record?.tenantId === tenantId ? record : null
-      },
-      listForMeeting: (meetingId) => repositories.recordings.listForMeeting(tenantId, meetingId),
-    }
-    const audit = {
-      forMeeting: (meetingId) => repositories.audit.forMeeting(tenantId, meetingId),
-      chain: () => repositories.audit.chain(tenantId),
-    }
-    const commitments = {
-      query: (query = '') => repositories.commitments.query(tenantId, query),
-    }
-    const outbox = {
-      list: () => repositories.outbox.list(normalized),
-    }
-
-    if (writable) {
-      meetings.save = (record) => {
-        assertTenantRecord(normalized, record, 'meeting')
-        return repositories.meetings.save(record)
-      }
-      knowledge.addSegments = (records) => {
-        assertTenantRecordList(normalized, records, 'transcript segment')
-        return repositories.knowledge.addSegments(records)
-      }
-      knowledge.addAssertions = (records) => {
-        assertTenantRecordList(normalized, records, 'knowledge assertion')
-        return repositories.knowledge.addAssertions(records)
-      }
-      knowledge.clearMeeting = (meetingId) => repositories.knowledge.clearMeeting(tenantId, meetingId)
-      recordings.save = (record) => {
-        assertTenantRecord(normalized, record, 'recording')
-        const existing = repositories.recordings.get(record.id)
-        invariant(!existing || existing.tenantId === tenantId, 'TENANT_SCOPE_VIOLATION', 'Recording must remain inside the active tenant scope', 403)
-        return repositories.recordings.save(record)
-      }
-      recordings.putBytes = (recordingId, bytes) => {
-        requireRecording(recordingId)
-        return repositories.recordings.putBytes(recordingId, bytes)
-      }
-      recordings.getBytes = (recordingId) => {
-        requireRecording(recordingId)
-        return repositories.recordings.getBytes(recordingId)
-      }
-      recordings.clearContent = (recordingId) => {
-        requireRecording(recordingId)
-        return repositories.recordings.clearContent(recordingId)
-      }
-      audit.append = (event) => {
-        assertTenantRecord(normalized, event, 'audit event')
-        return repositories.audit.append(event)
-      }
-      commitments.replaceMeeting = (meetingId, knowledgeForMeeting) => {
-        const segments = knowledgeForMeeting?.segments ?? []
-        const assertions = knowledgeForMeeting?.assertions ?? []
-        assertTenantRecordList(normalized, segments, 'transcript segment')
-        assertTenantRecordList(normalized, assertions, 'knowledge assertion')
-        invariant(segments.every((item) => item.meetingId === meetingId) && assertions.every((item) => item.meetingId === meetingId),
-          'TENANT_SCOPE_VIOLATION', 'Commitments must remain inside the active meeting scope', 403)
-        return repositories.commitments.replaceMeeting(tenantId, meetingId, knowledgeForMeeting)
-      }
-      commitments.clearMeeting = (meetingId) => repositories.commitments.clearMeeting(tenantId, meetingId)
-      outbox.enqueue = (event) => {
-        assertTenantRecord(normalized, event, 'outbox event')
-        // The injector exists solely to exercise the prototype transaction
-        // boundary. It runs before the insert, so a thrown failure is covered
-        // by the composition root's rollback below.
-        if (shouldFailOutboxEnqueue?.(structuredClone(event))) {
-          throw new Error('Injected outbox enqueue failure')
-        }
-        return repositories.outbox.enqueue(normalized, event)
-      }
-    }
-
-    return createTenantStorageFacade(normalized, {
-      meetings,
-      knowledge,
-      recordings,
-      audit,
-      commitments,
-      outbox,
-    }, { writable })
-  }
-
-  return createMeetingStorageBundle({
+  return composeRepositoryStorage({
     kind: 'in-memory-prototype',
-    scope: (scope) => scopedFacade(scope),
-    transaction: (scope, operation) => {
-      const normalized = tenantScope(scope)
-      // Snapshot before minting the tenant-bound write facade. This is a
-      // synchronous prototype implementation of the all-or-nothing contract:
-      // if an outbox enqueue or derived commitment write fails, canonical rows
-      // and outbox rows are restored together. Production replaces this with
-      // one database transaction covering the same records.
+    repositories,
+    beforeOutboxEnqueue: shouldFailOutboxEnqueue,
+    // Snapshot before the write facade is minted. This is a synchronous
+    // prototype of the all-or-nothing contract: if an outbox enqueue or a
+    // derived commitment write fails, canonical and outbox rows are restored
+    // together. Durable adapters supply a real database transaction instead.
+    runAtomically: (work) => {
       const snapshots = Object.fromEntries(Object.entries(repositories).map(([name, repository]) => [name, repository.snapshot()]))
       try {
-        const result = operation(scopedFacade(normalized, { writable: true }))
-        invariant(!(result && typeof result.then === 'function'), 'ASYNC_STORAGE_TRANSACTION_UNSUPPORTED', 'In-memory transactions must complete synchronously', 400)
-        return result
+        return work()
       } catch (error) {
         for (const [name, repository] of Object.entries(repositories)) repository.restore(snapshots[name])
         throw error

@@ -55,6 +55,8 @@ const POLICY_REASON_CODES = new Set([
 // never accepted from a request, and it can only expire content that current
 // policy says is past its retention date.
 const RETENTION_SERVICE_ID = 'service:retention'
+// Startup recovery of jobs interrupted by a restart, also tenant-scoped.
+const RECOVERY_SERVICE_ID = 'service:recovery'
 const DELETE_BYTES_ON_REVOKE = new Set(['pending-deletion', 'deletion-in-progress', 'deleted'])
 const AUDIT_TIMELINE_LIMIT = 100
 const SAFE_AUDIT_REASONS = new Set([
@@ -1229,6 +1231,23 @@ export class MeetingIntelligencePlatform {
       }
       if (this.#tenantTransaction) this.#tenantTransaction(tenantId, dispose)
       else dispose()
+  }
+
+  // Run once at startup with durable storage. A job that was queued or running
+  // when the server stopped can never finish (its in-process task is gone), so
+  // it is marked failed through the normal failure path, which leaves it
+  // retryable by its organizer instead of stuck in "processing" forever.
+  recoverInterruptedProcessing(tenantId, correlationId = randomUUID()) {
+    const actor = principal({ tenantId, userId: RECOVERY_SERVICE_ID })
+    let recovered = 0
+    for (const meetingRecord of this.meetings.list(tenantId)) {
+      for (const recording of this.recordings?.listForMeeting(tenantId, meetingRecord.id) ?? []) {
+        if (!['queued', 'processing'].includes(recording.state)) continue
+        this.#processorFailure(recording.id, correlationId, actor)
+        recovered += 1
+      }
+    }
+    return Object.freeze({ recovered })
   }
 
   // Retention sweep for one tenant, run by the scheduler (never by a request).

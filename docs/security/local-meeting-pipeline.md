@@ -48,7 +48,18 @@ Status: working end to end on one machine. It is not yet deployable to other use
 ## What still blocks wider delivery
 
 1. **Identity:** Microsoft Entra sign-in must replace the `x-tenant-id` / `x-user-id` development headers. Until then the API must stay loopback-only.
-2. **Durable storage:** recordings, transcripts, and audit live in process memory and are lost on restart. This needs the PostgreSQL, object storage, and KMS adapter described in `docs/architecture/durable-storage-foundation.md`.
+2. **Production storage:** local data is now durable (see "Local durable storage" below), but it lives in one SQLite file on one machine. Shared, backed-up production storage still needs the PostgreSQL, object storage, and KMS adapter described in `docs/architecture/durable-storage-foundation.md`.
 3. **Data processing terms:** confirm that the Anthropic organization's data-retention and processing terms are acceptable for meeting transcripts before real meetings are processed.
 4. **Speaker identification:** owners come only from names stated in the meeting. Diarization and verified speaker binding are not implemented.
 5. **Export lifecycle:** a downloaded file cannot be recalled. Revocation and deletion stop future exports but cannot reach copies already saved; expiring share links are not implemented.
+
+## Local durable storage
+
+- **Where:** `.data/meeting-ledger.sqlite` (Git-ignored), written through `server/adapters/sqlite.js` with the built-in `node:sqlite`.
+- **Same safeguards as before.** The adapter plugs into the same tenant facade as the in-memory adapter, so tenant binding and record checks are identical. Commitments and outbox rows are produced by the same shared functions.
+- **Real transactions.** Writes commit or roll back together; nested calls use savepoints.
+- **Audio encryption.** Recording audio is encrypted with AES-256-GCM, a fresh nonce per recording, and additional authenticated data binding each ciphertext to its tenant and recording. A tampered byte, a ciphertext moved onto another recording, or a wrong key fails closed with `RECORDING_CONTENT_UNAVAILABLE`. Decryption never returns partial or altered audio.
+- **Key handling.** The 256-bit key is generated on first run at `.data/keys/recording-audio-v1.key`. File permissions are set to owner-only where the OS supports it (on Windows, rely on the user profile's ACLs).
+- **Not encrypted:** transcripts, summaries, and audit are stored unencrypted in the database file. Protect the machine with full-disk encryption (BitLocker).
+- **Audit.** The audit table is append-only at the database level: triggers reject `UPDATE` and `DELETE`. The per-tenant hash chain continues across restarts.
+- **Startup.** On startup, jobs left queued or processing by a restart are marked failed (audited as `service:recovery`) and can be retried. A database written by another data model version is refused.

@@ -94,6 +94,11 @@ Suggested next work. Ask me which one; items 1–3 need my input:
    - An excess request returns 429 with `Retry-After` and is not audited.
    - The studio's status poll skips a throttled tick instead of failing.
    - Tests are in `server/rate-limit.test.js`.
-8. Every remaining roadmap item needs a decision from me: Entra sign-in, durable storage, Anthropic data terms, or speaker diarization. Ask before starting any of them.
+8. Done (Claude, 2026-10-03; user chose local storage with a generated key file): local durable storage.
+   - `server/adapters/sqlite.js` stores data in `.data/` using `node:sqlite`. Audio is encrypted with AES-256-GCM, bound to tenant and recording. The audit table is append-only through database triggers.
+   - Both backends share `composeRepositoryStorage` in `storage.js`.
+   - `recoverInterruptedProcessing` runs at startup. The demo meeting is seeded only once. The Vite dev server opens `.data/vite-dev/` lazily.
+   - Tests are in `server/durable-storage.test.js`.
+9. Every remaining roadmap item needs a decision from me: Entra sign-in, production PostgreSQL/KMS hosting, Anthropic data terms, or speaker diarization. Ask before starting any of them.
 
 Start by reading the files listed above. Run `npm test` to confirm a green baseline, then tell me what you plan to do before making large changes.

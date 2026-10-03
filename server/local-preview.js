@@ -4,6 +4,7 @@ import { extname, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createDevelopmentPlatform, DEVELOPMENT_TENANTS } from './development.js'
 import { createHttpHandler } from './http.js'
+import { openLocalDurableStorage } from './adapters/sqlite.js'
 import { isLoopbackRequest, isMeetingApiPath, rejectNonLoopback } from './local-only.js'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -63,7 +64,9 @@ function isEntrypoint() {
 
 if (isEntrypoint()) {
   const port = Number(process.env.PORT ?? 4173)
-  const platform = createDevelopmentPlatform()
+  // Meetings, transcripts, action plans, and audit persist in .data/ (Git-ignored).
+  const { storage } = openLocalDurableStorage({ directory: process.env.MEETING_DATA_DIR ?? join(root, '.data') })
+  const platform = createDevelopmentPlatform({ storage })
   const server = createLocalPreviewServer({ platform })
   // Retention sweep: expired content is already unreadable; this deletes it.
   setInterval(() => { for (const tenantId of DEVELOPMENT_TENANTS) platform.enforceRetention(tenantId) }, 60_000).unref()

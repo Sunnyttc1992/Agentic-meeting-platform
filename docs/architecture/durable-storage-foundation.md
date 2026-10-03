@@ -30,6 +30,14 @@ Outbox rows are not an audit-log substitute and they are not a replication of me
 
 The prototype validates this shape and tenant-local replay behavior with its sealed transaction facade. A production adapter must insert the canonical row mutation and its corresponding outbox row in the same Postgres transaction; the in-memory adapter is a deterministic contract harness, not a crash-safe transaction implementation.
 
+## Local durable adapter
+
+`openLocalDurableStorage({ directory })` in [`server/adapters/sqlite.js`](../../server/adapters/sqlite.js) is a working durable backend for the local, single-machine delivery. It is SQLite (built-in `node:sqlite`) with encrypted recording audio.
+
+- It is composed through `composeRepositoryStorage`, so it uses the same sealed tenant facade, record checks, commitment derivation (`deriveCommitmentRows`), and outbox canonicalization (`canonicalOutboxEvent`) as the in-memory prototype.
+- Its `runAtomically` is a real SQLite transaction (`BEGIN IMMEDIATE`, with savepoints for nested calls).
+- It is not the production target. It is one file on one machine, with no RLS, replication, or KMS.
+
 ## Production adapter seam
 
 A production `MeetingStorage` implementation is registered with `createMeetingStorageBundle({ scope, transaction })`, with `dataModelVersion: 'meeting-ledger-v1'`. The public bundle has exactly four fields: `kind`, `dataModelVersion`, `scope`, and `transaction`; it never exposes raw `meetings`, `knowledge`, `recordings`, `audit`, `commitments`, or `outbox` repositories. The composition root mints every callback/read capability through `createTenantStorageFacade(scope, capabilities, { writable })`.

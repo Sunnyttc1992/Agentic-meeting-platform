@@ -15,6 +15,9 @@ node_modules/
 .cache/
 dist/
 
+# Local durable meeting data and its audio encryption key. Never commit these.
+.data/
+
 # Local server secrets. Example templates are deliberately kept trackable.
 .env
 .env.*

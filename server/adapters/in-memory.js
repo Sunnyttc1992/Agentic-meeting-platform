@@ -44,7 +44,41 @@ export class InMemoryKnowledgeRepository {
 const CANONICAL_PROCESSOR_ASSERTION_ORIGIN = 'processor-normalized-v1'
 const CANONICAL_PROCESSOR_SOURCE = 'speech-processor'
 
-// This is a derived read model, never an independent source of meeting facts.
+// Commitments are a derived read model, never an independent source of meeting
+// facts. Every storage backend derives its rows with this one function, so the
+// canonical-processor-only rule cannot drift between backends.
+export function deriveCommitmentRows(tenantId, meetingId, knowledge) {
+  const rows = []
+  const segmentIds = new Set((knowledge?.segments ?? []).map((segment) => segment.id))
+  for (const assertion of knowledge?.assertions ?? []) {
+    if (assertion?.tenantId !== tenantId || assertion?.meetingId !== meetingId || assertion?.kind !== 'action') continue
+    // `canonicalOrigin` is minted by MeetingIntelligencePlatform's private
+    // processor normalization boundary.  Direct/manual writes are forbidden
+    // from creating actions, and stale or externally injected rows without
+    // this marker remain non-indexable as defense in depth.
+    if (assertion.provenance?.source !== CANONICAL_PROCESSOR_SOURCE || assertion.provenance?.canonicalOrigin !== CANONICAL_PROCESSOR_ASSERTION_ORIGIN) continue
+    if (!isBoundedKnowledgeCitationList(assertion.citations) || !assertion.citations.every((id) => segmentIds.has(id))) continue
+    const commitment = assertion.commitment ?? { ownerId: null, deadline: null, status: 'open' }
+    rows.push(Object.freeze({
+      id: `commitment:${assertion.id}`,
+      tenantId,
+      meetingId,
+      assertionId: assertion.id,
+      text: assertion.text,
+      ownerId: commitment.ownerId ?? null,
+      deadline: commitment.deadline ?? null,
+      status: commitment.status ?? 'open',
+      citations: Object.freeze([...assertion.citations]),
+    }))
+  }
+  return rows
+}
+
+export function commitmentMatchesQuery(row, query = '') {
+  const term = String(query ?? '').trim().toLocaleLowerCase()
+  return !term || [row.text, row.ownerId ?? '', row.status, row.deadline ?? ''].some((field) => field.toLocaleLowerCase().includes(term))
+}
+
 // The platform replaces a meeting's rows from canonical knowledge after every
 // publication, so replaying a job cannot create a second commitment.
 export class InMemoryCommitmentRegistry {
@@ -52,29 +86,7 @@ export class InMemoryCommitmentRegistry {
 
   replaceMeeting(tenantId, meetingId, knowledge) {
     this.clearMeeting(tenantId, meetingId)
-    const segmentIds = new Set((knowledge.segments ?? []).map((segment) => segment.id))
-    for (const assertion of knowledge.assertions ?? []) {
-      if (assertion?.tenantId !== tenantId || assertion?.meetingId !== meetingId || assertion?.kind !== 'action') continue
-      // `canonicalOrigin` is minted by MeetingIntelligencePlatform's private
-      // processor normalization boundary.  Direct/manual writes are forbidden
-      // from creating actions, and stale or externally injected rows without
-      // this marker remain non-indexable as defense in depth.
-      if (assertion.provenance?.source !== CANONICAL_PROCESSOR_SOURCE || assertion.provenance?.canonicalOrigin !== CANONICAL_PROCESSOR_ASSERTION_ORIGIN) continue
-      if (!isBoundedKnowledgeCitationList(assertion.citations) || !assertion.citations.every((id) => segmentIds.has(id))) continue
-      const commitment = assertion.commitment ?? { ownerId: null, deadline: null, status: 'open' }
-      const row = Object.freeze({
-        id: `commitment:${assertion.id}`,
-        tenantId,
-        meetingId,
-        assertionId: assertion.id,
-        text: assertion.text,
-        ownerId: commitment.ownerId ?? null,
-        deadline: commitment.deadline ?? null,
-        status: commitment.status ?? 'open',
-        citations: Object.freeze([...assertion.citations]),
-      })
-      this.#commitments.set(`${tenantId}:${meetingId}:${assertion.id}`, row)
-    }
+    for (const row of deriveCommitmentRows(tenantId, meetingId, knowledge)) this.#commitments.set(`${tenantId}:${meetingId}:${row.assertionId}`, row)
   }
 
   clearMeeting(tenantId, meetingId) {
@@ -83,10 +95,8 @@ export class InMemoryCommitmentRegistry {
   }
 
   query(tenantId, query = '') {
-    const term = String(query ?? '').trim().toLocaleLowerCase()
     return [...this.#commitments.values()]
-      .filter((item) => item.tenantId === tenantId)
-      .filter((item) => !term || [item.text, item.ownerId ?? '', item.status, item.deadline ?? ''].some((field) => field.toLocaleLowerCase().includes(term)))
+      .filter((item) => item.tenantId === tenantId && commitmentMatchesQuery(item, query))
       .map((item) => structuredClone(item))
   }
   snapshot() { return structuredClone(this.#commitments) }
