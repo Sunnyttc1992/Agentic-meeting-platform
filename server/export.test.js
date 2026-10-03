@@ -41,14 +41,14 @@ async function processedMeeting() {
     policy: new PolicyEngine({ managementGrants: [{ tenantId: 'northstar', managerId: 'ceo', subordinateIds: ['alex'] }] }),
     clock: new FixedClock('2026-10-03T12:00:00Z'), acceptedMimeTypes: [SPEECH_WAV_MIME_TYPE], schedule: (job) => jobs.push(job),
   })
-  platform.createMeeting(alex, { id: 'meeting-1', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex', 'sam'], classification: 'standard', consentPolicyVersion: 'v1' })
-  for (const actor of [alex, sam]) platform.recordConsent(actor, 'meeting-1', { participantId: actor.userId, capturedAt: '2026-10-03T11:59:00Z', expiresAt: '2026-10-03T15:00:00Z', policyVersion: 'v1', decision: 'granted', method: 'explicit' })
+  await platform.createMeeting(alex, { id: 'meeting-1', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex', 'sam'], classification: 'standard', consentPolicyVersion: 'v1' })
+  for (const actor of [alex, sam]) await platform.recordConsent(actor, 'meeting-1', { participantId: actor.userId, capturedAt: '2026-10-03T11:59:00Z', expiresAt: '2026-10-03T15:00:00Z', policyVersion: 'v1', decision: 'granted', method: 'explicit' })
   const process = async () => {
     const bytes = Buffer.from(encodeWavPcm16(new Float32Array(16000)))
-    const lease = platform.authorizeRecording(alex, 'meeting-1')
-    const created = platform.createRecording(alex, 'meeting-1', { leaseId: lease.leaseId, contentType: SPEECH_WAV_MIME_TYPE, byteLength: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })
-    platform.uploadRecording(alex, 'meeting-1', created.recordingId, { contentType: SPEECH_WAV_MIME_TYPE, contentLength: bytes.length, bytes })
-    platform.startProcessing(alex, 'meeting-1', created.recordingId)
+    const lease = (await platform.authorizeRecording(alex, 'meeting-1'))
+    const created = (await platform.createRecording(alex, 'meeting-1', { leaseId: lease.leaseId, contentType: SPEECH_WAV_MIME_TYPE, byteLength: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }))
+    await platform.uploadRecording(alex, 'meeting-1', created.recordingId, { contentType: SPEECH_WAV_MIME_TYPE, contentLength: bytes.length, bytes })
+    await platform.startProcessing(alex, 'meeting-1', created.recordingId)
     await jobs.shift()()
   }
   return { platform, audit, process }
@@ -57,7 +57,7 @@ async function processedMeeting() {
 test('a participant exports a cited, confidential meeting record', async () => {
   const { platform, process } = await processedMeeting()
   await process()
-  const record = platform.exportMeetingRecord(sam, 'meeting-1', 'corr-export-1')
+  const record = (await platform.exportMeetingRecord(sam, 'meeting-1', 'corr-export-1'))
   assert.equal(record.filename, 'meeting-1-record.md')
   assert.equal(record.contentType, 'text/markdown; charset=utf-8')
   const body = record.body
@@ -73,7 +73,7 @@ test('a participant exports a cited, confidential meeting record', async () => {
 test('speech and model text cannot inject links, HTML, table cells, or headings into the export', async () => {
   const { platform, process } = await processedMeeting()
   await process()
-  const body = platform.exportMeetingRecord(alex, 'meeting-1').body
+  const body = (await platform.exportMeetingRecord(alex, 'meeting-1')).body
   assert.doesNotMatch(body, /(?<!\\)\]\(/, 'no live Markdown link or image')
   assert.doesNotMatch(body, /(?<!\\)<script/, 'no raw HTML')
   assert.doesNotMatch(body, /https:\/\/evil/, 'no auto-linked URL')
@@ -87,11 +87,11 @@ test('speech and model text cannot inject links, HTML, table cells, or headings 
 test('export is participant-only, denies managers and outsiders opaquely, and every attempt is audited without content', async () => {
   const { platform, audit, process } = await processedMeeting()
   await process()
-  assert.ok(platform.getMeetingKnowledge(ceo, 'meeting-1').segments.length > 0, 'the manager can view the meeting')
-  assert.throws(() => platform.exportMeetingRecord(ceo, 'meeting-1', 'corr-ceo'), { code: 'EXPORT_FORBIDDEN' }, 'but cannot carry it out')
-  assert.throws(() => platform.exportMeetingRecord({ tenantId: 'northstar', userId: 'outsider' }, 'meeting-1'), { code: 'MEETING_FORBIDDEN' })
-  assert.throws(() => platform.exportMeetingRecord({ tenantId: 'southstar', userId: 'sam' }, 'meeting-1'), { code: 'MEETING_NOT_FOUND' })
-  platform.exportMeetingRecord(alex, 'meeting-1', 'corr-alex')
+  assert.ok((await platform.getMeetingKnowledge(ceo, 'meeting-1')).segments.length > 0, 'the manager can view the meeting')
+  await assert.rejects(async () => (await platform.exportMeetingRecord(ceo, 'meeting-1', 'corr-ceo')), { code: 'EXPORT_FORBIDDEN' }, 'but cannot carry it out')
+  await assert.rejects(async () => (await platform.exportMeetingRecord({ tenantId: 'northstar', userId: 'outsider' }, 'meeting-1')), { code: 'MEETING_FORBIDDEN' })
+  await assert.rejects(async () => (await platform.exportMeetingRecord({ tenantId: 'southstar', userId: 'sam' }, 'meeting-1')), { code: 'MEETING_NOT_FOUND' })
+  await platform.exportMeetingRecord(alex, 'meeting-1', 'corr-alex')
 
   const exports = audit.all().filter((event) => event.action === 'meeting.export')
   assert.deepEqual(exports.map((event) => [event.principalId, event.outcome, event.reason]), [
@@ -105,10 +105,10 @@ test('export is participant-only, denies managers and outsiders opaquely, and ev
 
 test('export refuses an unprocessed or deleted meeting instead of producing an empty or stale record', async () => {
   const { platform, process } = await processedMeeting()
-  assert.throws(() => platform.exportMeetingRecord(alex, 'meeting-1'), { code: 'NO_MEETING_RECORD' })
+  await assert.rejects(async () => (await platform.exportMeetingRecord(alex, 'meeting-1')), { code: 'NO_MEETING_RECORD' })
   await process()
-  platform.deleteMeetingContent(alex, 'meeting-1')
-  assert.throws(() => platform.exportMeetingRecord(alex, 'meeting-1'), { code: 'RETENTION_RESTRICTED' })
+  await platform.deleteMeetingContent(alex, 'meeting-1')
+  await assert.rejects(async () => (await platform.exportMeetingRecord(alex, 'meeting-1')), { code: 'RETENTION_RESTRICTED' })
 })
 
 test('the export route serves an uncached attachment and keeps errors generic', async () => {

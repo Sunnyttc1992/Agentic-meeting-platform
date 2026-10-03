@@ -120,31 +120,31 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
       const deleteMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings$/)
       const teamsImportMatch = url.pathname.match(/^\/meetings\/([^/]+)\/integrations\/microsoft-teams\/import$/)
       if (request.method === 'GET' && url.pathname === '/pipeline/readiness') {
-        const teamsReadiness = platform.getTeamsReadiness(principalFrom(request), correlationId)
+        const teamsReadiness = await platform.getTeamsReadiness(principalFrom(request), correlationId)
         return json(response, 200, pipelineReadiness.inspect({ teamsReadiness }))
       }
-      if (request.method === 'GET' && url.pathname === '/integrations/microsoft-teams/readiness') return json(response, 200, platform.getTeamsReadiness(principalFrom(request), correlationId))
-      if (request.method === 'GET' && url.pathname === '/audit/integrity') return json(response, 200, platform.verifyAuditIntegrity(principalFrom(request), { anchor: auditAnchorFrom(url.searchParams) }, correlationId))
-      if (managementBriefingRead) return json(response, 200, platform.getManagementBriefing(principalFrom(request), correlationId))
-      if (commitmentsRead) return json(response, 200, platform.queryCommitments(principalFrom(request), url.searchParams.get('query') ?? '', correlationId))
-      if (request.method === 'GET' && knowledgeMatch) return json(response, 200, platform.getMeetingKnowledge(principalFrom(request), knowledgeMatch[1], correlationId))
+      if (request.method === 'GET' && url.pathname === '/integrations/microsoft-teams/readiness') return json(response, 200, await platform.getTeamsReadiness(principalFrom(request), correlationId))
+      if (request.method === 'GET' && url.pathname === '/audit/integrity') return json(response, 200, await platform.verifyAuditIntegrity(principalFrom(request), { anchor: auditAnchorFrom(url.searchParams) }, correlationId))
+      if (managementBriefingRead) return json(response, 200, await platform.getManagementBriefing(principalFrom(request), correlationId))
+      if (commitmentsRead) return json(response, 200, await platform.queryCommitments(principalFrom(request), url.searchParams.get('query') ?? '', correlationId))
+      if (request.method === 'GET' && knowledgeMatch) return json(response, 200, await platform.getMeetingKnowledge(principalFrom(request), knowledgeMatch[1], correlationId))
       isPrivacyAccessRead = request.method === 'GET' && Boolean(privacyAccessMatch)
-      if (isPrivacyAccessRead) return json(response, 200, platform.getMeetingPrivacyAccess(principalFrom(request), privacyAccessMatch[1], correlationId))
+      if (isPrivacyAccessRead) return json(response, 200, await platform.getMeetingPrivacyAccess(principalFrom(request), privacyAccessMatch[1], correlationId))
       if (request.method === 'POST' && consentMatch) {
         const body = validateConsent(await readJson(request))
-        platform.recordConsent(principalFrom(request), consentMatch[1], body, correlationId)
+        await platform.recordConsent(principalFrom(request), consentMatch[1], body, correlationId)
         response.writeHead(204)
         return response.end()
       }
       if (request.method === 'POST' && preflightMatch) {
         validatePreflight(await readJson(request))
-        const authorization = platform.authorizeRecording(principalFrom(request), preflightMatch[1], correlationId)
+        const authorization = await platform.authorizeRecording(principalFrom(request), preflightMatch[1], correlationId)
         return json(response, 200, { status: authorization.status, leaseId: authorization.leaseId, authorizationExpiresAt: authorization.authorizationExpiresAt, allowedMimeTypes: authorization.allowedMimeTypes, maxBytes: authorization.maxBytes })
       }
-      if (request.method === 'POST' && recordingsMatch) { const body=await readJson(request); strictObject(body,['leaseId','contentType','byteLength','sha256'],['leaseId','contentType','byteLength','sha256']); return json(response,201,platform.createRecording(principalFrom(request),recordingsMatch[1],body,correlationId)) }
-      if (request.method === 'PUT' && bytesMatch) { const contentType=String(header(request,'content-type')??'').toLowerCase(); const rawLength=header(request,'content-length'); const contentLength=rawLength===undefined?NaN:Number(rawLength); const bytes=await readBytes(request,platform.maxRecordingBytes); return json(response,200,platform.uploadRecording(principalFrom(request),bytesMatch[1],bytesMatch[2],{contentType,contentLength,bytes},correlationId)) }
+      if (request.method === 'POST' && recordingsMatch) { const body=await readJson(request); strictObject(body,['leaseId','contentType','byteLength','sha256'],['leaseId','contentType','byteLength','sha256']); return json(response,201,await platform.createRecording(principalFrom(request),recordingsMatch[1],body,correlationId)) }
+      if (request.method === 'PUT' && bytesMatch) { const contentType=String(header(request,'content-type')??'').toLowerCase(); const rawLength=header(request,'content-length'); const contentLength=rawLength===undefined?NaN:Number(rawLength); const bytes=await readBytes(request,platform.maxRecordingBytes); return json(response,200,await platform.uploadRecording(principalFrom(request),bytesMatch[1],bytesMatch[2],{contentType,contentLength,bytes},correlationId)) }
       if (request.method === 'GET' && exportMatch) {
-        const record = platform.exportMeetingRecord(principalFrom(request), exportMatch[1], correlationId)
+        const record = await platform.exportMeetingRecord(principalFrom(request), exportMatch[1], correlationId)
         response.writeHead(200, {
           'content-type': record.contentType,
           'content-disposition': `attachment; filename="${record.filename}"`,
@@ -153,14 +153,14 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
         })
         return response.end(record.body)
       }
-      if (request.method === 'POST' && retryMatch) { validatePreflight(await readJson(request)); return json(response,202,platform.retryProcessing(principalFrom(request),retryMatch[1],retryMatch[2],correlationId)) }
-      if (request.method === 'POST' && processMatch) { validatePreflight(await readJson(request)); return json(response,202,platform.startProcessing(principalFrom(request),processMatch[1],processMatch[2],correlationId)) }
-      if (request.method === 'GET' && statusMatch) return json(response,200,platform.getRecording(principalFrom(request),statusMatch[1],statusMatch[2],correlationId))
-      if (request.method === 'DELETE' && deleteMatch) return json(response,200,platform.deleteMeetingContent(principalFrom(request),deleteMatch[1],correlationId))
-      if (request.method === 'POST' && teamsImportMatch) return json(response, 202, platform.prepareTeamsImport(principalFrom(request), teamsImportMatch[1], await readJson(request), correlationId))
+      if (request.method === 'POST' && retryMatch) { validatePreflight(await readJson(request)); return json(response,202,await platform.retryProcessing(principalFrom(request),retryMatch[1],retryMatch[2],correlationId)) }
+      if (request.method === 'POST' && processMatch) { validatePreflight(await readJson(request)); return json(response,202,await platform.startProcessing(principalFrom(request),processMatch[1],processMatch[2],correlationId)) }
+      if (request.method === 'GET' && statusMatch) return json(response,200,await platform.getRecording(principalFrom(request),statusMatch[1],statusMatch[2],correlationId))
+      if (request.method === 'DELETE' && deleteMatch) return json(response,200,await platform.deleteMeetingContent(principalFrom(request),deleteMatch[1],correlationId))
+      if (request.method === 'POST' && teamsImportMatch) return json(response, 202, await platform.prepareTeamsImport(principalFrom(request), teamsImportMatch[1], await readJson(request), correlationId))
       if (request.method === 'POST' && url.pathname === '/ai/retrieve') {
         const body = await readJson(request)
-        return json(response, 200, { context: platform.retrieveForAi(principalFrom(request), body.query, correlationId) })
+        return json(response, 200, { context: await platform.retrieveForAi(principalFrom(request), body.query, correlationId) })
       }
       return json(response, 404, errorBody('NOT_FOUND', 'Route not found', correlationId))
     } catch (error) {

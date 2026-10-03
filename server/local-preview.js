@@ -33,9 +33,12 @@ function sendFile(response, path) {
   createReadStream(path).pipe(response)
 }
 
+// `platform` may be a platform or a promise of one (development setup seeds
+// and recovers through storage, which is asynchronous).
 export function createLocalPreviewServer({ clientRoot = defaultClientRoot, platform = createDevelopmentPlatform(), pipelineReadiness } = {}) {
-  const api = createHttpHandler(platform, pipelineReadiness ? { pipelineReadiness } : undefined)
-  return createServer((request, response) => {
+  const apiReady = Promise.resolve(platform).then((ready) => createHttpHandler(ready, pipelineReadiness ? { pipelineReadiness } : undefined))
+  apiReady.catch(() => {})
+  return createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://localhost')
     let pathname
     try {
@@ -45,7 +48,7 @@ export function createLocalPreviewServer({ clientRoot = defaultClientRoot, platf
     }
 
     if (isMeetingApiPath(pathname)) {
-      return isLoopbackRequest(request) ? api(request, response) : rejectNonLoopback(response)
+      return isLoopbackRequest(request) ? (await apiReady)(request, response) : rejectNonLoopback(response)
     }
 
     const candidate = assetPath(clientRoot, pathname)
@@ -66,10 +69,14 @@ if (isEntrypoint()) {
   const port = Number(process.env.PORT ?? 4173)
   // Meetings, transcripts, action plans, and audit persist in .data/ (Git-ignored).
   const { storage } = openLocalDurableStorage({ directory: process.env.MEETING_DATA_DIR ?? join(root, '.data') })
-  const platform = createDevelopmentPlatform({ storage })
+  const platform = await createDevelopmentPlatform({ storage })
   const server = createLocalPreviewServer({ platform })
   // Retention sweep: expired content is already unreadable; this deletes it.
-  setInterval(() => { for (const tenantId of DEVELOPMENT_TENANTS) platform.enforceRetention(tenantId) }, 60_000).unref()
+  setInterval(async () => {
+    for (const tenantId of DEVELOPMENT_TENANTS) {
+      try { await platform.enforceRetention(tenantId) } catch (error) { console.error('Retention sweep failed:', error.code ?? error.message) }
+    }
+  }, 60_000).unref()
   server.listen(port, '127.0.0.1', () => {
     console.log(`Local preview with meeting API (this machine only): http://localhost:${port}`)
   })

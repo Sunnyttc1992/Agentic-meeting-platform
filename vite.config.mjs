@@ -14,12 +14,12 @@ function developmentApi() {
       // data folder from `npm run preview` keeps the two servers from
       // recovering (failing) each other's in-flight jobs at startup.
       let handler = null;
-      const api = () => (handler ??= createHttpHandler(createDevelopmentPlatform({
+      const api = () => (handler ??= createDevelopmentPlatform({
         storage: openLocalDurableStorage({ directory: process.env.MEETING_DATA_DIR ?? ".data/vite-dev" }).storage,
-      })));
+      }).then((platform) => createHttpHandler(platform)));
       server.middlewares.use((request, response, next) => {
         const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
-        if (isMeetingApiPath(pathname)) return isLoopbackRequest(request) ? api()(request, response) : rejectNonLoopback(response);
+        if (isMeetingApiPath(pathname)) return isLoopbackRequest(request) ? api().then((handle) => handle(request, response)) : rejectNonLoopback(response);
         next();
       });
     },

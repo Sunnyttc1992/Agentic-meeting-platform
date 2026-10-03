@@ -6,35 +6,35 @@ import { MeetingIntelligencePlatform } from './platform.js'
 import { PolicyEngine } from './policy.js'
 import { FakeSpeechProcessor } from './speech.js'
 
-test('the prototype storage bundle satisfies the durable adapter contract and scopes transactions', () => {
+test('the prototype storage bundle satisfies the durable adapter contract and scopes transactions', async () => {
   const storage = createInMemoryMeetingStorage()
-  assert.equal(assertMeetingStorageContract(storage), storage)
+  assert.equal((await assertMeetingStorageContract(storage)), storage)
   assert.equal(storage.dataModelVersion, MEETING_LEDGER_DATA_MODEL_VERSION)
-  assert.equal(storage.transaction({ tenantId: 'northstar' }, (transaction) => transaction.tenantId), 'northstar')
+  assert.equal((await storage.transaction({ tenantId: 'northstar' }, (transaction) => transaction.tenantId)), 'northstar')
   assert.equal(storage.scope({ tenantId: 'northstar' }).tenantId, 'northstar')
-  assert.throws(() => storage.transaction({}, () => null), { code: 'INVALID_TENANT_SCOPE' })
+  await assert.rejects(async () => (await storage.transaction({}, () => null)), { code: 'INVALID_TENANT_SCOPE' })
 })
 
-test('outbox idempotency is tenant-local and does not allow a cross-tenant event', () => {
+test('outbox idempotency is tenant-local and does not allow a cross-tenant event', async () => {
   const storage = createInMemoryMeetingStorage()
   const event = { tenantId: 'northstar', type: 'meeting.changed', idempotencyKey: 'meeting-1:v1', aggregateId: 'meeting-1' }
-  const first = storage.transaction({ tenantId: 'northstar' }, (transaction) => transaction.outbox.enqueue(event))
-  const replay = storage.transaction({ tenantId: 'northstar' }, (transaction) => transaction.outbox.enqueue({ ...event, type: 'ignored-on-replay' }))
+  const first = (await storage.transaction({ tenantId: 'northstar' }, (transaction) => transaction.outbox.enqueue(event)))
+  const replay = (await storage.transaction({ tenantId: 'northstar' }, (transaction) => transaction.outbox.enqueue({ ...event, type: 'ignored-on-replay' })))
   assert.equal(first.type, 'meeting.changed')
   assert.deepEqual(replay, first)
   assert.deepEqual(storage.scope({ tenantId: 'southstar' }).outbox.list(), [])
-  assert.throws(() => storage.transaction({ tenantId: 'southstar' }, (transaction) => transaction.outbox.enqueue(event)), { code: 'TENANT_SCOPE_VIOLATION' })
+  await assert.rejects(async () => (await storage.transaction({ tenantId: 'southstar' }, (transaction) => transaction.outbox.enqueue(event))), { code: 'TENANT_SCOPE_VIOLATION' })
 })
 
-test('transaction callbacks receive only sealed tenant capabilities and cannot escape to another tenant', () => {
+test('transaction callbacks receive only sealed tenant capabilities and cannot escape to another tenant', async () => {
   const storage = createInMemoryMeetingStorage()
-  storage.transaction({ tenantId: 'northstar' }, (transaction) => transaction.meetings.save({ id: 'north-meeting', tenantId: 'northstar', organizerId: 'alex' }))
-  storage.transaction({ tenantId: 'southstar' }, (transaction) => {
+  await storage.transaction({ tenantId: 'northstar' }, (transaction) => transaction.meetings.save({ id: 'north-meeting', tenantId: 'northstar', organizerId: 'alex' }))
+  await storage.transaction({ tenantId: 'southstar' }, (transaction) => {
     transaction.meetings.save({ id: 'south-meeting', tenantId: 'southstar', organizerId: 'bea' })
     transaction.recordings.save({ id: 'south-recording', tenantId: 'southstar', meetingId: 'south-meeting' })
   })
 
-  storage.transaction({ tenantId: 'northstar' }, (transaction) => {
+  await storage.transaction({ tenantId: 'northstar' }, (transaction) => {
     assert.equal(Object.getPrototypeOf(transaction), null)
     assert.equal(Object.getPrototypeOf(transaction.meetings), null)
     assert.deepEqual(Object.getOwnPropertySymbols(transaction), [])
@@ -82,14 +82,41 @@ test('transaction callbacks receive only sealed tenant capabilities and cannot e
   assert.equal(storage.scope({ tenantId: 'southstar' }).outbox.list().length, 0)
 })
 
-test('transaction callbacks are synchronous and propagate callback errors without exposing storage', () => {
+test('transactions may be asynchronous, run one at a time, roll back on failure, and nest without deadlock', async () => {
   const storage = createInMemoryMeetingStorage()
   const expected = new Error('expected callback failure')
-  assert.throws(() => storage.transaction({ tenantId: 'northstar' }, () => { throw expected }), (error) => error === expected)
-  assert.throws(() => storage.transaction({ tenantId: 'northstar' }, () => Promise.resolve('later')), { code: 'ASYNC_STORAGE_TRANSACTION_UNSUPPORTED' })
+  await assert.rejects(async () => (await storage.transaction({ tenantId: 'northstar' }, () => { throw expected })), (error) => error === expected)
+
+  const meeting = (id) => ({ id, tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex'] })
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 5))
+  assert.equal(await storage.transaction({ tenantId: 'northstar' }, async (tx) => { await pause(); tx.meetings.save(meeting('async-1')); return 'committed' }), 'committed')
+  assert.equal(storage.scope({ tenantId: 'northstar' }).meetings.get('async-1').id, 'async-1')
+
+  await assert.rejects(storage.transaction({ tenantId: 'northstar' }, async (tx) => {
+    tx.meetings.save(meeting('async-rollback'))
+    await pause()
+    throw expected
+  }), (error) => error === expected)
+  assert.equal(storage.scope({ tenantId: 'northstar' }).meetings.get('async-rollback'), null, 'a failure after an await rolls back')
+
+  const order = []
+  await Promise.all([
+    storage.transaction({ tenantId: 'northstar' }, async () => { order.push('a:start'); await pause(); order.push('a:end') }),
+    storage.transaction({ tenantId: 'northstar' }, async () => { order.push('b:start'); await pause(); order.push('b:end') }),
+  ])
+  assert.deepEqual(order, ['a:start', 'a:end', 'b:start', 'b:end'], 'concurrent transactions never interleave')
+
+  const nested = await storage.transaction({ tenantId: 'northstar' }, async (outer) => {
+    outer.meetings.save(meeting('outer'))
+    await assert.rejects(storage.transaction({ tenantId: 'northstar' }, async (inner) => { inner.meetings.save(meeting('inner')); throw expected }))
+    return storage.transaction({ tenantId: 'northstar' }, async (inner) => { inner.meetings.save(meeting('inner-ok')); return 'joined' })
+  })
+  assert.equal(nested, 'joined', 'a nested transaction joins the outer one instead of waiting on it')
+  const scope = storage.scope({ tenantId: 'northstar' })
+  assert.deepEqual([scope.meetings.get('outer')?.id, scope.meetings.get('inner'), scope.meetings.get('inner-ok')?.id], ['outer', null, 'inner-ok'], 'only the failed nested part rolls back')
 })
 
-test('storage contract rejects structurally forged and mis-scoped tenant facades', () => {
+test('storage contract rejects structurally forged and mis-scoped tenant facades', async () => {
   const forged = {
     kind: 'in-memory-prototype',
     dataModelVersion: MEETING_LEDGER_DATA_MODEL_VERSION,
@@ -97,14 +124,14 @@ test('storage contract rejects structurally forged and mis-scoped tenant facades
     scope: ({ tenantId }) => Object.freeze({ tenantId, meetings: {}, knowledge: {}, recordings: {}, audit: {}, commitments: {}, outbox: {} }),
     transaction: ({ tenantId }, operation) => operation({ tenantId, meetings: {}, knowledge: {}, recordings: {}, audit: {}, commitments: {}, outbox: {} }),
   }
-  assert.throws(() => assertMeetingStorageContract(forged), { code: 'INVALID_STORAGE_ADAPTER' })
+  await assert.rejects(async () => (await assertMeetingStorageContract(forged)), { code: 'INVALID_STORAGE_ADAPTER' })
 
   const forgedBundle = createMeetingStorageBundle({
     kind: 'forged',
     scope: ({ tenantId }) => Object.freeze({ tenantId, meetings: {}, knowledge: {}, recordings: {}, audit: {}, commitments: {}, outbox: {} }),
     transaction: ({ tenantId }, operation) => operation(Object.freeze({ tenantId, meetings: {}, knowledge: {}, recordings: {}, audit: {}, commitments: {}, outbox: {} })),
   })
-  assert.throws(() => assertMeetingStorageContract(forgedBundle), { code: 'INVALID_STORAGE_ADAPTER' })
+  await assert.rejects(async () => (await assertMeetingStorageContract(forgedBundle)), { code: 'INVALID_STORAGE_ADAPTER' })
 
   const inertCapabilities = () => ({
     meetings: { get: () => null, list: () => [] },
@@ -124,15 +151,15 @@ test('storage contract rejects structurally forged and mis-scoped tenant facades
       outbox: { ...inertCapabilities().outbox, enqueue: () => null },
     }, { writable: true })),
   })
-  assert.throws(() => assertMeetingStorageContract(invalid), { code: 'INVALID_STORAGE_ADAPTER' })
+  await assert.rejects(async () => (await assertMeetingStorageContract(invalid)), { code: 'INVALID_STORAGE_ADAPTER' })
 
 })
 
-test('platform accepts a validated storage bundle without changing its public behavior', () => {
+test('platform accepts a validated storage bundle without changing its public behavior', async () => {
   const storage = createInMemoryMeetingStorage()
   const platform = new MeetingIntelligencePlatform({ storage, policy: new PolicyEngine() })
   const organizer = { tenantId: 'northstar', userId: 'alex' }
-  platform.createMeeting(organizer, {
+  await platform.createMeeting(organizer, {
     id: 'meeting-storage-contract', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex'], classification: 'standard',
   })
   assert.equal(platform.storage, undefined)
@@ -153,24 +180,24 @@ test('storage-backed platform emits tenant-scoped canonical lifecycle events wit
   const sam = { tenantId: 'northstar', userId: 'sam' }
   const bytes = Buffer.from('outbox lifecycle fixture')
   const sha256 = createHash('sha256').update(bytes).digest('hex')
-  platform.createMeeting(alex, {
+  await platform.createMeeting(alex, {
     id: 'outbox-meeting', tenantId: 'northstar', organizerId: 'alex',
     participantIds: ['alex', 'sam'], classification: 'standard',
   })
   for (const actor of [alex, sam]) {
-    platform.recordConsent(actor, 'outbox-meeting', {
+    await platform.recordConsent(actor, 'outbox-meeting', {
       participantId: actor.userId, decision: 'granted', policyVersion: 'v1',
       capturedAt: '2026-10-03T11:00:00Z', expiresAt: '2026-10-04T11:00:00Z',
     })
   }
-  const lease = platform.authorizeRecording(alex, 'outbox-meeting')
-  const created = platform.createRecording(alex, 'outbox-meeting', {
+  const lease = (await platform.authorizeRecording(alex, 'outbox-meeting'))
+  const created = (await platform.createRecording(alex, 'outbox-meeting', {
     leaseId: lease.leaseId, contentType: 'audio/webm', byteLength: bytes.length, sha256,
-  })
-  platform.uploadRecording(alex, 'outbox-meeting', created.recordingId, {
+  }))
+  await platform.uploadRecording(alex, 'outbox-meeting', created.recordingId, {
     contentType: 'audio/webm', contentLength: bytes.length, bytes,
   })
-  platform.startProcessing(alex, 'outbox-meeting', created.recordingId, 'outbox-process')
+  await platform.startProcessing(alex, 'outbox-meeting', created.recordingId, 'outbox-process')
   await jobs.shift()()
 
   const events = storage.scope({ tenantId: 'northstar' }).outbox.list()
@@ -199,14 +226,14 @@ test('storage-backed platform emits tenant-scoped canonical lifecycle events wit
 
   // Starting an already completed recording is a replay-safe no-op: no new
   // canonical change and no duplicate outbox rows.
-  platform.startProcessing(alex, 'outbox-meeting', created.recordingId, 'outbox-replay')
+  await platform.startProcessing(alex, 'outbox-meeting', created.recordingId, 'outbox-replay')
   assert.equal(storage.scope({ tenantId: 'northstar' }).outbox.list().length, events.length)
-  assert.throws(() => platform.addAssertions(alex, 'outbox-meeting', [{
+  await assert.rejects(async () => (await platform.addAssertions(alex, 'outbox-meeting', [{
     id: 'untrusted-action', kind: 'action', text: 'UNTRUSTED-OUTBOX-CANARY', citations: [`${created.recordingId}-segment-1`],
-  }], 'untrusted-outbox'), { code: 'UNTRUSTED_ACTION_ASSERTION' })
+  }], 'untrusted-outbox')), { code: 'UNTRUSTED_ACTION_ASSERTION' })
   assert.equal(storage.scope({ tenantId: 'northstar' }).outbox.list().length, events.length)
 
-  platform.deleteMeetingContent(alex, 'outbox-meeting', 'outbox-delete')
+  await platform.deleteMeetingContent(alex, 'outbox-meeting', 'outbox-delete')
   const afterDelete = storage.scope({ tenantId: 'northstar' }).outbox.list()
   assert.equal(afterDelete.length, events.length + 1)
   const deletion = afterDelete.find((event) => event.type === 'meeting.content.deleted')
@@ -218,7 +245,7 @@ test('storage-backed platform emits tenant-scoped canonical lifecycle events wit
   assert.equal(audit.some((event) => String(event.action).startsWith('outbox.')), false)
 })
 
-test('canonical transcript and assertion outbox writes are replay-safe and roll back together on enqueue failure', () => {
+test('canonical transcript and assertion outbox writes are replay-safe and roll back together on enqueue failure', async () => {
   let failingEventType = null
   const storage = createInMemoryMeetingStorage({
     shouldFailOutboxEnqueue: (event) => event.type === failingEventType,
@@ -226,34 +253,34 @@ test('canonical transcript and assertion outbox writes are replay-safe and roll 
   const platform = new MeetingIntelligencePlatform({ storage, policy: new PolicyEngine() })
   const alex = { tenantId: 'northstar', userId: 'alex' }
   const sam = { tenantId: 'northstar', userId: 'sam' }
-  platform.createMeeting(alex, {
+  await platform.createMeeting(alex, {
     id: 'atomic-ledger', tenantId: 'northstar', organizerId: 'alex',
     participantIds: ['alex', 'sam'], classification: 'standard',
   })
   for (const actor of [alex, sam]) {
-    platform.recordConsent(actor, 'atomic-ledger', {
+    await platform.recordConsent(actor, 'atomic-ledger', {
       participantId: actor.userId, decision: 'granted', policyVersion: 'v1',
       capturedAt: '2026-10-03T11:00:00Z', expiresAt: '2026-10-04T11:00:00Z',
     })
   }
-  const authorization = platform.authorizeRecording(alex, 'atomic-ledger')
+  const authorization = (await platform.authorizeRecording(alex, 'atomic-ledger'))
   const segment = {
     id: 'atomic-segment', speakerId: 'sam', startMs: 0, endMs: 500,
     text: 'Atomic evidence survives only with its event', provenance: {},
   }
 
   failingEventType = 'knowledge.changed'
-  assert.throws(() => platform.appendTranscript(alex, 'atomic-ledger', authorization, [segment], 'atomic-transcript-failure'))
+  await assert.rejects(async () => (await platform.appendTranscript(alex, 'atomic-ledger', authorization, [segment], 'atomic-transcript-failure')))
   assert.deepEqual(storage.scope({ tenantId: 'northstar' }).knowledge.forMeeting('atomic-ledger'), { segments: [], assertions: [] })
   assert.deepEqual(storage.scope({ tenantId: 'northstar' }).outbox.list(), [])
   assert.deepEqual(storage.scope({ tenantId: 'southstar' }).knowledge.forMeeting('atomic-ledger'), { segments: [], assertions: [] })
   assert.deepEqual(storage.scope({ tenantId: 'southstar' }).outbox.list(), [])
 
   failingEventType = null
-  platform.appendTranscript(alex, 'atomic-ledger', authorization, [segment], 'atomic-transcript-success')
+  await platform.appendTranscript(alex, 'atomic-ledger', authorization, [segment], 'atomic-transcript-success')
   const afterTranscript = storage.scope({ tenantId: 'northstar' }).outbox.list()
   assert.equal(afterTranscript.filter((event) => event.type === 'knowledge.changed').length, 1)
-  platform.appendTranscript(alex, 'atomic-ledger', authorization, [segment], 'atomic-transcript-replay')
+  await platform.appendTranscript(alex, 'atomic-ledger', authorization, [segment], 'atomic-transcript-replay')
   assert.equal(storage.scope({ tenantId: 'northstar' }).knowledge.forMeeting('atomic-ledger').segments.length, 1)
   assert.equal(storage.scope({ tenantId: 'northstar' }).outbox.list().length, afterTranscript.length)
 
@@ -262,21 +289,21 @@ test('canonical transcript and assertion outbox writes are replay-safe and roll 
   // failure rolls back canonical assertions, derived commitments, and the
   // first staged event together.
   failingEventType = 'commitments.changed'
-  assert.throws(() => platform.addAssertions(alex, 'atomic-ledger', [assertion], 'atomic-assertion-failure'))
+  await assert.rejects(async () => (await platform.addAssertions(alex, 'atomic-ledger', [assertion], 'atomic-assertion-failure')))
   assert.equal(storage.scope({ tenantId: 'northstar' }).knowledge.forMeeting('atomic-ledger').assertions.length, 0)
   assert.deepEqual(storage.scope({ tenantId: 'northstar' }).commitments.query(), [])
   assert.equal(storage.scope({ tenantId: 'northstar' }).outbox.list().length, afterTranscript.length)
 
-  assert.throws(() => platform.addAssertions(alex, 'atomic-ledger', [{ ...assertion, id: 'untrusted-atomic-action', kind: 'action' }], 'atomic-untrusted'), { code: 'UNTRUSTED_ACTION_ASSERTION' })
+  await assert.rejects(async () => (await platform.addAssertions(alex, 'atomic-ledger', [{ ...assertion, id: 'untrusted-atomic-action', kind: 'action' }], 'atomic-untrusted')), { code: 'UNTRUSTED_ACTION_ASSERTION' })
   assert.equal(storage.scope({ tenantId: 'northstar' }).outbox.list().length, afterTranscript.length)
 
   failingEventType = null
-  platform.addAssertions(alex, 'atomic-ledger', [assertion], 'atomic-assertion-success')
+  await platform.addAssertions(alex, 'atomic-ledger', [assertion], 'atomic-assertion-success')
   const afterAssertion = storage.scope({ tenantId: 'northstar' }).outbox.list()
   assert.equal(storage.scope({ tenantId: 'northstar' }).knowledge.forMeeting('atomic-ledger').assertions.length, 1)
   assert.equal(afterAssertion.filter((event) => event.type === 'knowledge.changed').length, 2)
   assert.equal(afterAssertion.filter((event) => event.type === 'commitments.changed').length, 1)
-  platform.addAssertions(alex, 'atomic-ledger', [assertion], 'atomic-assertion-replay')
+  await platform.addAssertions(alex, 'atomic-ledger', [assertion], 'atomic-assertion-replay')
   assert.equal(storage.scope({ tenantId: 'northstar' }).knowledge.forMeeting('atomic-ledger').assertions.length, 1)
   assert.equal(storage.scope({ tenantId: 'northstar' }).outbox.list().length, afterAssertion.length)
 })

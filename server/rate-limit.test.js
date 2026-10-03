@@ -46,7 +46,7 @@ test('a flood of fabricated identities cannot grow the limiter without bound', (
 test('the API answers 429 with Retry-After before doing any platform work or writing audit events', async () => {
   const audit = new InMemoryAppendOnlyAudit()
   const platform = new MeetingIntelligencePlatform({ meetings: new InMemoryMeetingRepository(), knowledge: new InMemoryKnowledgeRepository(), audit, clock: new FixedClock('2026-10-03T12:00:00Z'), policy: new PolicyEngine() })
-  platform.createMeeting({ tenantId: 'northstar', userId: 'alex' }, { id: 'meeting-1', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex', 'sam'], classification: 'standard' })
+  await platform.createMeeting({ tenantId: 'northstar', userId: 'alex' }, { id: 'meeting-1', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex', 'sam'], classification: 'standard' })
   const server = createHttpServer(platform)
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const base = `http://127.0.0.1:${server.address().port}`

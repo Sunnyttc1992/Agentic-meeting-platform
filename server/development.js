@@ -39,7 +39,7 @@ export function createSpeechProcessor({ mode = process.env.MEETING_PROCESSOR ?? 
 
 // `storage` defaults to in-memory so tests never touch disk; the local servers
 // pass durable SQLite storage (see server/adapters/sqlite.js).
-export function createDevelopmentPlatform({ speechProcessor = createSpeechProcessor(), storage = createInMemoryMeetingStorage() } = {}) {
+export async function createDevelopmentPlatform({ speechProcessor = createSpeechProcessor(), storage = createInMemoryMeetingStorage() } = {}) {
   const platform = new MeetingIntelligencePlatform({
     storage, speechProcessor,
     policy: new PolicyEngine({ retentionPolicies: DEVELOPMENT_RETENTION_POLICIES }),
@@ -49,7 +49,7 @@ export function createDevelopmentPlatform({ speechProcessor = createSpeechProces
   })
   // Seed the demo meeting only once. With durable storage, re-creating it on
   // every start would erase its consent, retention clock, and history.
-  if (!platform.meetings.get('northstar', 'meeting-1')) platform.createMeeting(
+  if (!(await platform.meetings.get('northstar', 'meeting-1'))) await platform.createMeeting(
     { tenantId: 'northstar', userId: 'alex' },
     {
       id: 'meeting-1',
@@ -62,6 +62,6 @@ export function createDevelopmentPlatform({ speechProcessor = createSpeechProces
     },
     'development-seed',
   )
-  for (const tenantId of DEVELOPMENT_TENANTS) platform.recoverInterruptedProcessing(tenantId, 'development-startup')
+  for (const tenantId of DEVELOPMENT_TENANTS) await platform.recoverInterruptedProcessing(tenantId, 'development-startup')
   return platform
 }

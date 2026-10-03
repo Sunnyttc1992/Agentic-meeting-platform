@@ -4,14 +4,14 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { sealAuditEvent } from '../audit.js'
 import { invariant } from '../errors.js'
-import { canonicalOutboxEvent, composeRepositoryStorage, MEETING_LEDGER_DATA_MODEL_VERSION, tenantScope } from '../storage.js'
+import { canonicalOutboxEvent, composeRepositoryStorage, createSerializedTransactionRunner, MEETING_LEDGER_DATA_MODEL_VERSION, tenantScope } from '../storage.js'
 import { commitmentMatchesQuery, deriveCommitmentRows } from './in-memory.js'
 
 // Local durable storage: one SQLite file on this machine (node:sqlite, no
 // extra dependency). It implements the same repository signatures as the
 // in-memory adapters, so the shared tenant facade in storage.js applies its
 // tenant binding and record checks unchanged. Writes run in real SQLite
-// transactions (nested calls use savepoints), so a failed write rolls back
+// transactions, run one at a time (nested calls use savepoints), so a failed write rolls back
 // canonical rows, derived commitments, and outbox rows together.
 //
 // Recording audio is encrypted with AES-256-GCM. The key is a generated
@@ -185,28 +185,25 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
     list: (scope) => parseAll(sql('SELECT doc FROM outbox WHERE tenant_id = ? ORDER BY rowid').all(tenantScope(scope).tenantId)),
   }
 
-  let depth = 0
-  const runAtomically = (work) => {
-    const savepoint = `meeting_ledger_${depth}`
-    db.exec(depth === 0 ? 'BEGIN IMMEDIATE' : `SAVEPOINT ${savepoint}`)
-    depth += 1
-    let result
-    try {
-      result = work()
-    } catch (error) {
-      depth -= 1
-      db.exec(depth === 0 ? 'ROLLBACK' : `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`)
-      throw error
-    }
-    depth -= 1
-    try {
-      db.exec(depth === 0 ? 'COMMIT' : `RELEASE ${savepoint}`)
-    } catch (error) {
-      if (depth === 0 && db.isTransaction) db.exec('ROLLBACK')
-      throw error
-    }
-    return result
-  }
+  const runAtomically = createSerializedTransactionRunner({
+    begin: () => db.exec('BEGIN IMMEDIATE'),
+    commit: () => {
+      try {
+        db.exec('COMMIT')
+      } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK')
+        throw error
+      }
+    },
+    rollback: () => { if (db.isTransaction) db.exec('ROLLBACK') },
+    beginNested: (depth) => {
+      const savepoint = `meeting_ledger_${depth}`
+      db.exec(`SAVEPOINT ${savepoint}`)
+      return savepoint
+    },
+    commitNested: (savepoint) => db.exec(`RELEASE ${savepoint}`),
+    rollbackNested: (savepoint) => db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`),
+  })
 
   const storage = composeRepositoryStorage({
     kind: 'local-sqlite',

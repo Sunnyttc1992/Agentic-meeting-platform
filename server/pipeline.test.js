@@ -89,7 +89,7 @@ const HOSTILE_RESPONSE = {
   ],
 }
 
-function pipelineSetup(intelligence) {
+async function pipelineSetup(intelligence) {
   const meetings = new InMemoryMeetingRepository()
   const knowledge = new InMemoryKnowledgeRepository()
   const recordings = new InMemoryRecordingRepository()
@@ -104,24 +104,24 @@ function pipelineSetup(intelligence) {
     meetings, knowledge, recordings, audit, speechProcessor: processor, policy: new PolicyEngine(),
     clock: new FixedClock('2026-10-03T12:00:00Z'), acceptedMimeTypes: [SPEECH_WAV_MIME_TYPE], schedule: (job) => jobs.push(job),
   })
-  platform.createMeeting(alex, { id: 'meeting-1', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex', 'sam'], classification: 'standard', consentPolicyVersion: 'v1' })
-  for (const actor of [alex, sam]) platform.recordConsent(actor, 'meeting-1', { participantId: actor.userId, capturedAt: '2026-10-03T11:59:00Z', expiresAt: '2026-10-03T15:00:00Z', policyVersion: 'v1', decision: 'granted', method: 'explicit' })
+  await platform.createMeeting(alex, { id: 'meeting-1', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex', 'sam'], classification: 'standard', consentPolicyVersion: 'v1' })
+  for (const actor of [alex, sam]) await platform.recordConsent(actor, 'meeting-1', { participantId: actor.userId, capturedAt: '2026-10-03T11:59:00Z', expiresAt: '2026-10-03T15:00:00Z', policyVersion: 'v1', decision: 'granted', method: 'explicit' })
   return { platform, audit, jobs }
 }
 
 async function runRecording({ platform, jobs }, bytes = Buffer.from(encodeWavPcm16(tone(1))), contentType = SPEECH_WAV_MIME_TYPE) {
-  const lease = platform.authorizeRecording(alex, 'meeting-1')
+  const lease = (await platform.authorizeRecording(alex, 'meeting-1'))
   assert.deepEqual(lease.allowedMimeTypes, [SPEECH_WAV_MIME_TYPE])
-  const created = platform.createRecording(alex, 'meeting-1', { leaseId: lease.leaseId, contentType, byteLength: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })
-  platform.uploadRecording(alex, 'meeting-1', created.recordingId, { contentType, contentLength: bytes.length, bytes })
-  platform.startProcessing(alex, 'meeting-1', created.recordingId)
+  const created = (await platform.createRecording(alex, 'meeting-1', { leaseId: lease.leaseId, contentType, byteLength: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }))
+  await platform.uploadRecording(alex, 'meeting-1', created.recordingId, { contentType, contentLength: bytes.length, bytes })
+  await platform.startProcessing(alex, 'meeting-1', created.recordingId)
   await jobs.shift()()
-  return platform.getRecording(alex, 'meeting-1', created.recordingId)
+  return (await platform.getRecording(alex, 'meeting-1', created.recordingId))
 }
 
 test('Claude receives only the transcript, participant IDs, and date, and hostile output is defused before storage', async () => {
   const claude = fakeClaude(HOSTILE_RESPONSE)
-  const state = pipelineSetup(new ClaudeMeetingIntelligence({ client: claude.client }))
+  const state = (await pipelineSetup(new ClaudeMeetingIntelligence({ client: claude.client })))
   const status = await runRecording(state)
 
   const [request] = claude.requests
@@ -149,7 +149,7 @@ test('Claude receives only the transcript, participant IDs, and date, and hostil
   const segmentIds = new Set(status.segments.map((segment) => segment.id))
   assert.ok(status.assertions.every((assertion) => assertion.citations.every((id) => segmentIds.has(id))))
 
-  const commitments = state.platform.queryCommitments(alex, '', 'corr-commitments').commitments
+  const commitments = (await state.platform.queryCommitments(alex, '', 'corr-commitments')).commitments
   assert.equal(commitments.length, 2)
   assert.equal(commitments.find((item) => item.ownerId === 'sam')?.deadline, '2026-10-20T00:00:00.000Z')
   assert.doesNotMatch(JSON.stringify(state.audit.all()), /security findings|phased rollout|mallory/, 'audit stays content-free')
@@ -157,17 +157,17 @@ test('Claude receives only the transcript, participant IDs, and date, and hostil
 
 test('a Claude refusal or malformed reply fails closed with only PROCESSOR_FAILED and stores nothing', async () => {
   for (const claude of [fakeClaude(null, { stopReason: 'refusal' }), fakeClaude(null, { stopReason: 'max_tokens' })]) {
-    const state = pipelineSetup(new ClaudeMeetingIntelligence({ client: claude.client }))
+    const state = (await pipelineSetup(new ClaudeMeetingIntelligence({ client: claude.client })))
     const status = await runRecording(state)
     assert.equal(status.recording.state, 'failed')
     assert.equal(status.recording.error, 'PROCESSOR_FAILED')
     assert.equal(status.segments, undefined)
-    assert.deepEqual(state.platform.queryCommitments(alex, '', 'corr').commitments, [])
+    assert.deepEqual((await state.platform.queryCommitments(alex, '', 'corr')).commitments, [])
   }
 })
 
 test('without credentials the pipeline publishes an honest transcript-only result', async () => {
-  const state = pipelineSetup(null)
+  const state = (await pipelineSetup(null))
   const status = await runRecording(state)
   assert.equal(status.recording.processor, 'Local Whisper transcription only')
   assert.equal(status.segments.length, 3)
@@ -176,13 +176,13 @@ test('without credentials the pipeline publishes an honest transcript-only resul
 })
 
 test('the real pipeline accepts only verified WAV uploads', async () => {
-  const state = pipelineSetup(null)
-  const lease = state.platform.authorizeRecording(alex, 'meeting-1')
+  const state = (await pipelineSetup(null))
+  const lease = (await state.platform.authorizeRecording(alex, 'meeting-1'))
   const webm = Buffer.from('webm bytes')
-  assert.throws(() => state.platform.createRecording(alex, 'meeting-1', { leaseId: lease.leaseId, contentType: 'audio/webm', byteLength: webm.length, sha256: createHash('sha256').update(webm).digest('hex') }), { code: 'INVALID_CONTENT_TYPE' })
+  await assert.rejects(async () => (await state.platform.createRecording(alex, 'meeting-1', { leaseId: lease.leaseId, contentType: 'audio/webm', byteLength: webm.length, sha256: createHash('sha256').update(webm).digest('hex') })), { code: 'INVALID_CONTENT_TYPE' })
   const fake = Buffer.from('RIFF....WAVEnot really a wav file at all, padded to forty-four bytes')
-  const created = state.platform.createRecording(alex, 'meeting-1', { leaseId: lease.leaseId, contentType: SPEECH_WAV_MIME_TYPE, byteLength: fake.length, sha256: createHash('sha256').update(fake).digest('hex') })
-  assert.throws(() => state.platform.uploadRecording(alex, 'meeting-1', created.recordingId, { contentType: SPEECH_WAV_MIME_TYPE, contentLength: fake.length, bytes: fake }), { code: 'INVALID_MEDIA' })
+  const created = (await state.platform.createRecording(alex, 'meeting-1', { leaseId: lease.leaseId, contentType: SPEECH_WAV_MIME_TYPE, byteLength: fake.length, sha256: createHash('sha256').update(fake).digest('hex') }))
+  await assert.rejects(async () => (await state.platform.uploadRecording(alex, 'meeting-1', created.recordingId, { contentType: SPEECH_WAV_MIME_TYPE, contentLength: fake.length, bytes: fake })), { code: 'INVALID_MEDIA' })
 })
 
 test('the meeting API is reachable only from loopback with a loopback Host header', () => {
@@ -299,19 +299,19 @@ function flakyClaude(failures, payload) {
 
 test('a failed job can be retried by its organizer and then completes with the same validated output', async () => {
   const claude = flakyClaude(1, HOSTILE_RESPONSE)
-  const state = pipelineSetup(new ClaudeMeetingIntelligence({ client: claude.client }))
+  const state = (await pipelineSetup(new ClaudeMeetingIntelligence({ client: claude.client })))
   const failed = await runRecording(state)
   assert.equal(failed.recording.state, 'failed')
   assert.equal(failed.recording.retryAvailable, true)
 
-  assert.throws(() => state.platform.retryProcessing(sam, 'meeting-1', failed.recording.id), { code: 'RECORDING_FORBIDDEN' }, 'only the organizer may retry')
-  assert.throws(() => state.platform.retryProcessing({ tenantId: 'southstar', userId: 'alex' }, 'meeting-1', failed.recording.id), { code: 'MEETING_NOT_FOUND' })
-  const queued = state.platform.retryProcessing(alex, 'meeting-1', failed.recording.id, 'corr-retry')
+  await assert.rejects(async () => (await state.platform.retryProcessing(sam, 'meeting-1', failed.recording.id)), { code: 'RECORDING_FORBIDDEN' }, 'only the organizer may retry')
+  await assert.rejects(async () => (await state.platform.retryProcessing({ tenantId: 'southstar', userId: 'alex' }, 'meeting-1', failed.recording.id)), { code: 'MEETING_NOT_FOUND' })
+  const queued = (await state.platform.retryProcessing(alex, 'meeting-1', failed.recording.id, 'corr-retry'))
   assert.equal(queued.state, 'queued')
-  assert.throws(() => state.platform.retryProcessing(alex, 'meeting-1', failed.recording.id), { code: 'RECORDING_NOT_RETRYABLE' }, 'a queued job cannot be double-queued')
+  await assert.rejects(async () => (await state.platform.retryProcessing(alex, 'meeting-1', failed.recording.id)), { code: 'RECORDING_NOT_RETRYABLE' }, 'a queued job cannot be double-queued')
   await state.jobs.shift()()
 
-  const status = state.platform.getRecording(alex, 'meeting-1', failed.recording.id)
+  const status = (await state.platform.getRecording(alex, 'meeting-1', failed.recording.id))
   assert.equal(status.recording.state, 'completed')
   assert.equal(status.recording.retryAvailable, false)
   assert.equal(status.recording.withheldAssertions, 1)
@@ -322,24 +322,24 @@ test('a failed job can be retried by its organizer and then completes with the s
 
 test('retries are bounded and re-check consent, quarantining instead of retrying after a withdrawal', async () => {
   const always = flakyClaude(Infinity, HOSTILE_RESPONSE)
-  const state = pipelineSetup(new ClaudeMeetingIntelligence({ client: always.client }))
+  const state = (await pipelineSetup(new ClaudeMeetingIntelligence({ client: always.client })))
   const first = await runRecording(state)
   const id = first.recording.id
   for (let attempt = 2; attempt <= 3; attempt += 1) {
-    state.platform.retryProcessing(alex, 'meeting-1', id)
+    await state.platform.retryProcessing(alex, 'meeting-1', id)
     await state.jobs.shift()()
   }
-  const exhausted = state.platform.getRecording(alex, 'meeting-1', id)
+  const exhausted = (await state.platform.getRecording(alex, 'meeting-1', id))
   assert.equal(exhausted.recording.state, 'failed')
   assert.equal(exhausted.recording.retryAvailable, false)
-  assert.throws(() => state.platform.retryProcessing(alex, 'meeting-1', id), { code: 'RETRY_LIMIT_REACHED' })
+  await assert.rejects(async () => (await state.platform.retryProcessing(alex, 'meeting-1', id)), { code: 'RETRY_LIMIT_REACHED' })
   assert.equal(always.calls, 3, 'at most three model calls per recording')
 
-  const withdrawn = pipelineSetup(new ClaudeMeetingIntelligence({ client: flakyClaude(1, HOSTILE_RESPONSE).client }))
+  const withdrawn = (await pipelineSetup(new ClaudeMeetingIntelligence({ client: flakyClaude(1, HOSTILE_RESPONSE).client })))
   const failed = await runRecording(withdrawn)
-  withdrawn.platform.recordConsent(sam, 'meeting-1', { participantId: 'sam', capturedAt: '2026-10-03T11:59:30Z', expiresAt: '2026-10-03T15:00:00Z', policyVersion: 'v1', decision: 'withdrawn', method: 'explicit' })
-  assert.throws(() => withdrawn.platform.retryProcessing(alex, 'meeting-1', failed.recording.id))
+  await withdrawn.platform.recordConsent(sam, 'meeting-1', { participantId: 'sam', capturedAt: '2026-10-03T11:59:30Z', expiresAt: '2026-10-03T15:00:00Z', policyVersion: 'v1', decision: 'withdrawn', method: 'explicit' })
+  await assert.rejects(async () => (await withdrawn.platform.retryProcessing(alex, 'meeting-1', failed.recording.id)))
   assert.equal(withdrawn.jobs.length, 0, 'nothing is queued after consent is withdrawn')
-  const quarantined = withdrawn.platform.getRecording(alex, 'meeting-1', failed.recording.id)
+  const quarantined = (await withdrawn.platform.getRecording(alex, 'meeting-1', failed.recording.id))
   assert.deepEqual([quarantined.recording.state, quarantined.recording.retryAvailable], ['quarantined', false])
 })

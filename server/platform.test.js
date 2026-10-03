@@ -17,41 +17,41 @@ function setup(options = {}) {
   return { platform, meetings, knowledge, audit, clock }
 }
 
-function createAndConsent(platform, classification = 'standard', id = 'meeting-1') {
-  platform.createMeeting(organizer, { id, tenantId: tenant, organizerId: organizer.userId, participantIds: [organizer.userId, participant.userId], classification })
-  platform.recordConsent(organizer, id, { participantId: organizer.userId, capturedAt: '2026-09-30T11:59:00Z', expiresAt: '2026-09-30T13:00:00Z', policyVersion: 'v1', decision: 'granted' })
-  platform.recordConsent(participant, id, { participantId: participant.userId, capturedAt: '2026-09-30T11:59:05Z', expiresAt: '2026-09-30T13:00:00Z', policyVersion: 'v1', decision: 'granted' })
+async function createAndConsent(platform, classification = 'standard', id = 'meeting-1') {
+  await platform.createMeeting(organizer, { id, tenantId: tenant, organizerId: organizer.userId, participantIds: [organizer.userId, participant.userId], classification })
+  await platform.recordConsent(organizer, id, { participantId: organizer.userId, capturedAt: '2026-09-30T11:59:00Z', expiresAt: '2026-09-30T13:00:00Z', policyVersion: 'v1', decision: 'granted' })
+  await platform.recordConsent(participant, id, { participantId: participant.userId, capturedAt: '2026-09-30T11:59:05Z', expiresAt: '2026-09-30T13:00:00Z', policyVersion: 'v1', decision: 'granted' })
 }
 
-function seedKnowledge(platform, id = 'meeting-1') {
-  const authorization = platform.authorizeRecording(organizer, id)
-  platform.appendTranscript(organizer, id, authorization, [{ id: `${id}-segment`, speakerId: 'sam', startMs: 0, endMs: 2400, text: 'Launch depends on privacy review', provenance: { engine: 'local-test', capturedAt: '2026-09-30T12:00:01Z' } }])
-  platform.addAssertions(organizer, id, [{ id: `${id}-decision`, kind: 'decision', text: 'Privacy review gates launch', citations: [`${id}-segment`] }])
+async function seedKnowledge(platform, id = 'meeting-1') {
+  const authorization = (await platform.authorizeRecording(organizer, id))
+  await platform.appendTranscript(organizer, id, authorization, [{ id: `${id}-segment`, speakerId: 'sam', startMs: 0, endMs: 2400, text: 'Launch depends on privacy review', provenance: { engine: 'local-test', capturedAt: '2026-09-30T12:00:01Z' } }])
+  await platform.addAssertions(organizer, id, [{ id: `${id}-decision`, kind: 'decision', text: 'Privacy review gates launch', citations: [`${id}-segment`] }])
   return authorization
 }
 
-test('happy vertical slice preserves citations and writes correlated audit events', () => {
+test('happy vertical slice preserves citations and writes correlated audit events', async () => {
   const { platform, audit } = setup()
-  createAndConsent(platform)
-  seedKnowledge(platform)
-  const result = platform.getMeetingKnowledge(participant, 'meeting-1', 'corr-read')
+  await createAndConsent(platform)
+  await seedKnowledge(platform)
+  const result = (await platform.getMeetingKnowledge(participant, 'meeting-1', 'corr-read'))
   assert.equal(result.assertions[0].citations[0], 'meeting-1-segment')
   assert.equal(result.segments[0].speakerId, 'sam')
   assert.ok(audit.all().some((event) => event.correlationId === 'corr-read' && event.action === 'knowledge.read'))
 })
 
-test('unrelated user cannot read meeting knowledge', () => {
+test('unrelated user cannot read meeting knowledge', async () => {
   const { platform, audit } = setup()
-  createAndConsent(platform)
-  seedKnowledge(platform)
-  assert.throws(() => platform.getMeetingKnowledge({ tenantId: tenant, userId: 'outsider' }, 'meeting-1'), { code: 'MEETING_FORBIDDEN' })
+  await createAndConsent(platform)
+  await seedKnowledge(platform)
+  await assert.rejects(async () => (await platform.getMeetingKnowledge({ tenantId: tenant, userId: 'outsider' }, 'meeting-1')), { code: 'MEETING_FORBIDDEN' })
   assert.equal(audit.all().at(-1).outcome, 'denied')
 })
 
-test('direct participant action assertions cannot mint a commitment, owner, deadline, or status', () => {
+test('direct participant action assertions cannot mint a commitment, owner, deadline, or status', async () => {
   const { platform, knowledge, audit } = setup({ managementGrants: [{ tenantId: tenant, managerId: 'ceo', subordinateIds: ['alex'], expiresAt: '2026-10-01T00:00:00Z' }] })
-  createAndConsent(platform)
-  seedKnowledge(platform)
+  await createAndConsent(platform)
+  await seedKnowledge(platform)
   const canary = 'DIRECT-ACTION-COMMITMENT-CANARY'
   const action = {
     id: 'meeting-1-security-review', kind: 'action', text: canary,
@@ -60,23 +60,23 @@ test('direct participant action assertions cannot mint a commitment, owner, dead
     processorMetadata: { token: 'PROCESSOR-CANARY', owner: 'mallory' },
     provenance: { source: 'speech-processor', canonicalOrigin: 'processor-normalized-v1' },
   }
-  assert.throws(() => platform.addAssertions(organizer, 'meeting-1', [action], 'direct-action'), { code: 'UNTRUSTED_ACTION_ASSERTION' })
-  assert.deepEqual(platform.queryCommitments(participant, canary, 'direct-action-query'), { commitments: [] })
+  await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', [action], 'direct-action')), { code: 'UNTRUSTED_ACTION_ASSERTION' })
+  assert.deepEqual((await platform.queryCommitments(participant, canary, 'direct-action-query')), { commitments: [] })
   assert.equal(JSON.stringify(knowledge.forMeeting(tenant, 'meeting-1')).includes(canary), false)
   assert.equal(audit.all().some((event) => event.correlationId === 'direct-action-query' && event.meetingId === 'meeting-1'), false)
 })
 
-test('manual notes cannot forge processor provenance at any depth or leak omitted metadata through knowledge surfaces', () => {
+test('manual notes cannot forge processor provenance at any depth or leak omitted metadata through knowledge surfaces', async () => {
   const { platform, knowledge, audit } = setup()
-  createAndConsent(platform)
-  seedKnowledge(platform)
+  await createAndConsent(platform)
+  await seedKnowledge(platform)
   const kinds = ['decision', 'finding', 'question']
   const canaries = []
 
   for (const kind of kinds) {
     const canary = `FORGED-${kind.toUpperCase()}-PROCESSOR-CANARY`
     canaries.push(canary)
-    assert.throws(() => platform.addAssertions(organizer, 'meeting-1', [{
+    await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', [{
       id: `forged-${kind}`,
       kind,
       text: `${kind} must not be stored`,
@@ -89,24 +89,24 @@ test('manual notes cannot forge processor provenance at any depth or leak omitte
           processorTrace: canary,
         },
       },
-    }], `forged-${kind}`), { code: 'UNTRUSTED_PROCESSOR_PROVENANCE' })
+    }], `forged-${kind}`)), { code: 'UNTRUSTED_PROCESSOR_PROVENANCE' })
   }
 
   // Arbitrary non-processor request metadata is no longer silently dropped:
   // the participant-facing envelope is exact, so it cannot become a delayed
   // retrieval channel if a future mapper changes.
-  assert.throws(() => platform.addAssertions(organizer, 'meeting-1', [{
+  await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', [{
     id: 'manual-rejected', kind: 'finding', text: 'A malformed manual finding', citations: ['meeting-1-segment'],
     untrustedEnvelope: { nested: { canary: 'MANUAL-METADATA-CANARY' } },
-  }], 'manual-extra-field'), { code: 'INVALID_MANUAL_ASSERTION' })
-  platform.addAssertions(organizer, 'meeting-1', [{
+  }], 'manual-extra-field')), { code: 'INVALID_MANUAL_ASSERTION' })
+  await platform.addAssertions(organizer, 'meeting-1', [{
     id: 'manual-clean', kind: 'finding', text: 'A manually recorded finding', citations: ['meeting-1-segment'],
   }], 'manual-clean')
 
   const stored = knowledge.forMeeting(tenant, 'meeting-1')
-  const read = platform.getMeetingKnowledge(participant, 'meeting-1', 'manual-read')
-  const searched = platform.searchKnowledge(participant, 'manual', 'manual-search')
-  const ai = platform.retrieveForAi(participant, 'manual', 'manual-ai')
+  const read = (await platform.getMeetingKnowledge(participant, 'meeting-1', 'manual-read'))
+  const searched = (await platform.searchKnowledge(participant, 'manual', 'manual-search'))
+  const ai = (await platform.retrieveForAi(participant, 'manual', 'manual-ai'))
   const serialized = JSON.stringify([stored, read, searched, ai])
   for (const canary of [...canaries, 'MANUAL-METADATA-CANARY', 'processor-normalized-v1', 'speech-processor']) {
     assert.equal(serialized.includes(canary), false)
@@ -127,10 +127,10 @@ test('manual notes cannot forge processor provenance at any depth or leak omitte
   assert.equal(JSON.stringify(extraFieldEvent).includes('MANUAL-METADATA-CANARY'), false)
 })
 
-test('manual assertion envelope rejects every nested allowed field and every manual kind before all knowledge sinks', () => {
+test('manual assertion envelope rejects every nested allowed field and every manual kind before all knowledge sinks', async () => {
   const { platform, knowledge, audit } = setup()
-  createAndConsent(platform)
-  seedKnowledge(platform)
+  await createAndConsent(platform)
+  await seedKnowledge(platform)
   const canary = 'NESTED-MANUAL-ASSERTION-CANARY'
   const variants = [
     ['id', { canary }], ['id', [canary]],
@@ -152,7 +152,7 @@ test('manual assertion envelope rejects every nested allowed field and every man
       }
       assertion[field] = payload
       const correlationId = `nested-${kind}-${field}-${Array.isArray(payload) ? 'array' : 'object'}`
-      assert.throws(() => platform.addAssertions(organizer, 'meeting-1', [assertion], correlationId), { code: 'INVALID_MANUAL_ASSERTION' })
+      await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', [assertion], correlationId)), { code: 'INVALID_MANUAL_ASSERTION' })
       const event = audit.all().find((item) => item.correlationId === correlationId)
       assert.deepEqual({ action: event.action, outcome: event.outcome, reason: event.reason }, {
         action: 'knowledge.assertions.add', outcome: 'denied', reason: 'INVALID_MANUAL_ASSERTION',
@@ -166,15 +166,15 @@ test('manual assertion envelope rejects every nested allowed field and every man
   const proxy = new Proxy({
     id: 'manual-proxy', kind: 'finding', text: canary, citations: ['meeting-1-segment'],
   }, {})
-  assert.throws(() => platform.addAssertions(organizer, 'meeting-1', [proxy], 'nested-proxy'), { code: 'INVALID_MANUAL_ASSERTION' })
+  await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', [proxy], 'nested-proxy')), { code: 'INVALID_MANUAL_ASSERTION' })
 
   const accessor = { id: 'manual-accessor', kind: 'finding', citations: ['meeting-1-segment'] }
   Object.defineProperty(accessor, 'text', { enumerable: true, get: () => canary })
-  assert.throws(() => platform.addAssertions(organizer, 'meeting-1', [accessor], 'nested-accessor'), { code: 'INVALID_MANUAL_ASSERTION' })
+  await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', [accessor], 'nested-accessor')), { code: 'INVALID_MANUAL_ASSERTION' })
 
   const hiddenField = { id: 'manual-hidden', kind: 'finding', text: 'A valid-looking value', citations: ['meeting-1-segment'] }
   Object.defineProperty(hiddenField, 'trace', { enumerable: false, value: canary })
-  assert.throws(() => platform.addAssertions(organizer, 'meeting-1', [hiddenField], 'nested-hidden-field'), { code: 'INVALID_MANUAL_ASSERTION' })
+  await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', [hiddenField], 'nested-hidden-field')), { code: 'INVALID_MANUAL_ASSERTION' })
   for (const correlationId of ['nested-proxy', 'nested-accessor', 'nested-hidden-field']) {
     const event = audit.all().find((item) => item.correlationId === correlationId)
     assert.deepEqual({ action: event.action, outcome: event.outcome, reason: event.reason }, {
@@ -185,10 +185,10 @@ test('manual assertion envelope rejects every nested allowed field and every man
 
   const materialized = [
     knowledge.forMeeting(tenant, 'meeting-1'),
-    platform.getMeetingKnowledge(participant, 'meeting-1', 'nested-read'),
-    platform.searchKnowledge(participant, 'nested', 'nested-search'),
-    platform.retrieveForAi(participant, 'nested', 'nested-ai'),
-    platform.queryCommitments(participant, 'nested', 'nested-commitments'),
+    (await platform.getMeetingKnowledge(participant, 'meeting-1', 'nested-read')),
+    (await platform.searchKnowledge(participant, 'nested', 'nested-search')),
+    (await platform.retrieveForAi(participant, 'nested', 'nested-ai')),
+    (await platform.queryCommitments(participant, 'nested', 'nested-commitments')),
     audit.all(),
   ]
   const serialized = JSON.stringify(materialized)
@@ -196,10 +196,10 @@ test('manual assertion envelope rejects every nested allowed field and every man
   assert.equal(knowledge.forMeeting(tenant, 'meeting-1').assertions.some((item) => item.id.startsWith('manual-')), false)
 })
 
-test('manual assertion collections reject Array proxy map forgery and every non-dense collection shape before all sinks', () => {
+test('manual assertion collections reject Array proxy map forgery and every non-dense collection shape before all sinks', async () => {
   const { platform, knowledge, audit } = setup()
-  createAndConsent(platform)
-  seedKnowledge(platform)
+  await createAndConsent(platform)
+  await seedKnowledge(platform)
   const canary = 'OUTER-ARRAY-PROXY-MAP-CANARY'
   const forged = {
     id: 'forged-by-outer-map', kind: 'finding', text: canary, citations: ['meeting-1-segment'],
@@ -234,7 +234,7 @@ test('manual assertion collections reject Array proxy map forgery and every non-
     ['outer-proxy', proxyCollection], ['sparse', sparse], ['accessor', accessor],
     ['extra', extraProperty], ['symbol', symbolProperty], ['custom-map', customMap],
   ]) {
-    assert.throws(() => platform.addAssertions(organizer, 'meeting-1', value, `collection-${label}`), { code: 'INVALID_MANUAL_ASSERTION' })
+    await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', value, `collection-${label}`)), { code: 'INVALID_MANUAL_ASSERTION' })
     const event = audit.all().find((item) => item.correlationId === `collection-${label}`)
     assert.deepEqual({ action: event.action, outcome: event.outcome, reason: event.reason }, {
       action: 'knowledge.assertions.add', outcome: 'denied', reason: 'INVALID_MANUAL_ASSERTION',
@@ -244,11 +244,11 @@ test('manual assertion collections reject Array proxy map forgery and every non-
 
   const materialized = [
     knowledge.forMeeting(tenant, 'meeting-1'),
-    platform.getMeetingKnowledge(participant, 'meeting-1', 'collection-read'),
-    platform.searchKnowledge(participant, canary, 'collection-search'),
-    platform.retrieveForAi(participant, canary, 'collection-ai'),
-    platform.queryCommitments(participant, canary, 'collection-commitments'),
-    platform.getMeetingPrivacyAccess(participant, 'meeting-1', 'collection-status'),
+    (await platform.getMeetingKnowledge(participant, 'meeting-1', 'collection-read')),
+    (await platform.searchKnowledge(participant, canary, 'collection-search')),
+    (await platform.retrieveForAi(participant, canary, 'collection-ai')),
+    (await platform.queryCommitments(participant, canary, 'collection-commitments')),
+    (await platform.getMeetingPrivacyAccess(participant, 'meeting-1', 'collection-status')),
     audit.all(),
   ]
   const serialized = JSON.stringify(materialized)
@@ -258,16 +258,16 @@ test('manual assertion collections reject Array proxy map forgery and every non-
   assert.equal(knowledge.forMeeting(tenant, 'meeting-1').assertions.some((item) => item.id.includes('outer') || item.id === 'accessor'), false)
 })
 
-test('commitment queries fail closed per source meeting without leaking hidden or cross-tenant actions', () => {
+test('commitment queries fail closed per source meeting without leaking hidden or cross-tenant actions', async () => {
   const { platform, audit } = setup()
-  createAndConsent(platform)
-  seedKnowledge(platform)
-  assert.throws(() => platform.addAssertions(organizer, 'meeting-1', [{
+  await createAndConsent(platform)
+  await seedKnowledge(platform)
+  await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', [{
     id: 'private-action', kind: 'action', text: 'Private dependency must be closed.', citations: ['meeting-1-segment'],
     commitment: { ownerId: 'alex', status: 'open' },
-  }]), { code: 'UNTRUSTED_ACTION_ASSERTION' })
-  const privateResult = platform.queryCommitments({ tenantId: tenant, userId: 'outsider' }, 'dependency', 'commitment-private')
-  const crossTenantResult = platform.queryCommitments({ tenantId: 'other', userId: 'outsider' }, 'dependency', 'commitment-cross-tenant')
+  }])), { code: 'UNTRUSTED_ACTION_ASSERTION' })
+  const privateResult = (await platform.queryCommitments({ tenantId: tenant, userId: 'outsider' }, 'dependency', 'commitment-private'))
+  const crossTenantResult = (await platform.queryCommitments({ tenantId: 'other', userId: 'outsider' }, 'dependency', 'commitment-cross-tenant'))
   assert.deepEqual(privateResult, { commitments: [] })
   assert.deepEqual(crossTenantResult, { commitments: [] })
   const serialized = JSON.stringify([privateResult, crossTenantResult])
@@ -276,12 +276,12 @@ test('commitment queries fail closed per source meeting without leaking hidden o
   assert.equal(audit.all().some((event) => event.correlationId === 'commitment-cross-tenant' && event.meetingId === 'meeting-1'), false)
 })
 
-test('management briefing aggregates only authorized canonical sources with cited risks, blockers, and commitments', () => {
+test('management briefing aggregates only authorized canonical sources with cited risks, blockers, and commitments', async () => {
   const { platform, knowledge, audit } = setup({
     managementGrants: [{ tenantId: tenant, managerId: 'ceo', subordinateIds: ['alex'], expiresAt: '2026-10-01T00:00:00Z' }],
   })
-  createAndConsent(platform)
-  seedKnowledge(platform)
+  await createAndConsent(platform)
+  await seedKnowledge(platform)
 
   knowledge.addAssertions([
     {
@@ -301,16 +301,16 @@ test('management briefing aggregates only authorized canonical sources with cite
   // A non-participant meeting is intentionally present in the same tenant.
   // Its canary must not affect counts, rows, citations, or the public audit.
   const hiddenOrganizer = { tenantId: tenant, userId: 'bob' }
-  platform.createMeeting(hiddenOrganizer, {
+  await platform.createMeeting(hiddenOrganizer, {
     id: 'meeting-hidden', tenantId: tenant, organizerId: 'bob', participantIds: ['bob', 'riley'], classification: 'standard',
   })
   knowledge.addSegments([{ id: 'hidden-segment', tenantId: tenant, meetingId: 'meeting-hidden', startMs: 0, endMs: 1, diarizationLabel: 'SPEAKER_00', text: 'HIDDEN-BRIEFING-CANARY' }])
   knowledge.addAssertions([{ id: 'hidden-risk', tenantId: tenant, meetingId: 'meeting-hidden', kind: 'risk', text: 'HIDDEN-BRIEFING-CANARY', citations: ['hidden-segment'], provenance: { source: 'speech-processor' } }])
 
-  const participantBrief = platform.getManagementBriefing(participant, 'briefing-participant')
-  const executiveBrief = platform.getManagementBriefing({ tenantId: tenant, userId: 'ceo' }, 'briefing-executive')
-  const outsiderBrief = platform.getManagementBriefing({ tenantId: tenant, userId: 'outsider' }, 'briefing-outsider')
-  const crossTenantBrief = platform.getManagementBriefing({ tenantId: 'other', userId: 'outsider' }, 'briefing-cross-tenant')
+  const participantBrief = (await platform.getManagementBriefing(participant, 'briefing-participant'))
+  const executiveBrief = (await platform.getManagementBriefing({ tenantId: tenant, userId: 'ceo' }, 'briefing-executive'))
+  const outsiderBrief = (await platform.getManagementBriefing({ tenantId: tenant, userId: 'outsider' }, 'briefing-outsider'))
+  const crossTenantBrief = (await platform.getManagementBriefing({ tenantId: 'other', userId: 'outsider' }, 'briefing-cross-tenant'))
 
   assert.deepEqual(participantBrief.briefing.counts, { decisions: 1, risks: 1, blockers: 2, openActions: 1 })
   assert.equal(participantBrief.briefing.risks[0].source.meetingId, 'meeting-1')
@@ -334,10 +334,10 @@ test('management briefing aggregates only authorized canonical sources with cite
   }
 })
 
-test('oversized canonical assertion evidence never creates a commitment or briefing/API source, while a bounded sibling remains traceable', () => {
+test('oversized canonical assertion evidence never creates a commitment or briefing/API source, while a bounded sibling remains traceable', async () => {
   const { platform, knowledge, audit } = setup()
-  createAndConsent(platform)
-  seedKnowledge(platform)
+  await createAndConsent(platform)
+  await seedKnowledge(platform)
   const canary = 'OVERSIZED-COMMITMENT-CITATION-CANARY'
   const shared = {
     tenantId: tenant,
@@ -366,8 +366,8 @@ test('oversized canonical assertion evidence never creates a commitment or brief
   ])
   platform.commitments.replaceMeeting(tenant, 'meeting-1', knowledge.forMeeting(tenant, 'meeting-1'))
 
-  const commitments = platform.queryCommitments(participant, '', 'bounded-commitments')
-  const briefing = platform.getManagementBriefing(participant, 'bounded-briefing')
+  const commitments = (await platform.queryCommitments(participant, '', 'bounded-commitments'))
+  const briefing = (await platform.getManagementBriefing(participant, 'bounded-briefing'))
   assert.deepEqual(commitments.commitments, [{
     id: 'commitment:bounded-action', meetingId: 'meeting-1', text: 'Publish the reviewed security decision.',
     ownerId: 'sam', deadline: null, status: 'open',
@@ -383,53 +383,53 @@ test('oversized canonical assertion evidence never creates a commitment or brief
   assert.equal(materialized.includes('oversized-action'), false)
 })
 
-test('direct action replays and invalid owner details remain outside the commitment boundary', () => {
+test('direct action replays and invalid owner details remain outside the commitment boundary', async () => {
   const { platform, knowledge } = setup()
-  createAndConsent(platform)
-  seedKnowledge(platform)
-  assert.throws(() => platform.addAssertions(organizer, 'meeting-1', [{
+  await createAndConsent(platform)
+  await seedKnowledge(platform)
+  await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', [{
     id: 'invalid-owner', kind: 'action', text: 'Outsider owns this', citations: ['meeting-1-segment'], commitment: { ownerId: 'outsider' },
-  }]), { code: 'UNTRUSTED_ACTION_ASSERTION' })
-  assert.throws(() => platform.addAssertions(organizer, 'meeting-1', [{
+  }])), { code: 'UNTRUSTED_ACTION_ASSERTION' })
+  await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', [{
     id: 'replay-action', kind: 'action', text: 'Alex owns this', citations: ['meeting-1-segment'], commitment: { ownerId: 'alex' },
-  }]), { code: 'UNTRUSTED_ACTION_ASSERTION' })
+  }])), { code: 'UNTRUSTED_ACTION_ASSERTION' })
   assert.equal(knowledge.forMeeting(tenant, 'meeting-1').assertions.some((item) => item.kind === 'action'), false)
 })
 
-test('never-record classification is rejected before recording authorization', () => {
+test('never-record classification is rejected before recording authorization', async () => {
   const { platform } = setup()
-  createAndConsent(platform, 'legal-privileged')
-  assert.throws(() => platform.authorizeRecording(organizer, 'meeting-1'), { code: 'NEVER_RECORD' })
+  await createAndConsent(platform, 'legal-privileged')
+  await assert.rejects(async () => (await platform.authorizeRecording(organizer, 'meeting-1')), { code: 'NEVER_RECORD' })
 })
 
-test('expired recording authorization cannot append transcript and denial is audited without content', () => {
+test('expired recording authorization cannot append transcript and denial is audited without content', async () => {
   const { platform, clock, audit } = setup()
-  createAndConsent(platform)
-  const authorization = platform.authorizeRecording(organizer, 'meeting-1')
+  await createAndConsent(platform)
+  const authorization = (await platform.authorizeRecording(organizer, 'meeting-1'))
   clock.advance(1_001)
-  assert.throws(() => platform.appendTranscript(organizer, 'meeting-1', authorization, [{ id: 'late', speakerId: 'sam', startMs: 0, endMs: 1, text: 'SECRET-CANARY', provenance: {} }], 'corr-expired'), { code: 'RECORDING_AUTHORIZATION_EXPIRED' })
+  await assert.rejects(async () => (await platform.appendTranscript(organizer, 'meeting-1', authorization, [{ id: 'late', speakerId: 'sam', startMs: 0, endMs: 1, text: 'SECRET-CANARY', provenance: {} }], 'corr-expired')), { code: 'RECORDING_AUTHORIZATION_EXPIRED' })
   const event = audit.all().find((item) => item.correlationId === 'corr-expired')
   assert.deepEqual({ action: event.action, outcome: event.outcome, reason: event.reason }, { action: 'transcript.append', outcome: 'denied', reason: 'RECORDING_AUTHORIZATION_EXPIRED' })
   assert.equal(JSON.stringify(event).includes('SECRET-CANARY'), false)
 })
 
-test('management hierarchy requires an explicit unexpired policy grant', () => {
+test('management hierarchy requires an explicit unexpired policy grant', async () => {
   const withoutGrant = setup()
-  createAndConsent(withoutGrant.platform)
-  seedKnowledge(withoutGrant.platform)
+  await createAndConsent(withoutGrant.platform)
+  await seedKnowledge(withoutGrant.platform)
   const executive = { tenantId: tenant, userId: 'ceo', roles: ['executive'] }
-  assert.throws(() => withoutGrant.platform.getMeetingKnowledge(executive, 'meeting-1'), { code: 'MEETING_FORBIDDEN' })
+  await assert.rejects(async () => (await withoutGrant.platform.getMeetingKnowledge(executive, 'meeting-1')), { code: 'MEETING_FORBIDDEN' })
 
   const withGrant = setup({ managementGrants: [{ tenantId: tenant, managerId: 'ceo', subordinateIds: ['alex'], expiresAt: '2026-10-01T00:00:00Z' }] })
-  createAndConsent(withGrant.platform)
-  seedKnowledge(withGrant.platform)
-  assert.equal(withGrant.platform.getMeetingKnowledge(executive, 'meeting-1').meeting.id, 'meeting-1')
+  await createAndConsent(withGrant.platform)
+  await seedKnowledge(withGrant.platform)
+  assert.equal((await withGrant.platform.getMeetingKnowledge(executive, 'meeting-1')).meeting.id, 'meeting-1')
 })
 
-test('privacy access read model distinguishes participant and management-chain viewers without returning meeting content', () => {
+test('privacy access read model distinguishes participant and management-chain viewers without returning meeting content', async () => {
   const participantSlice = setup()
-  createAndConsent(participantSlice.platform, 'legal-privileged')
-  const participantView = participantSlice.platform.getMeetingPrivacyAccess(participant, 'meeting-1', 'privacy-participant')
+  await createAndConsent(participantSlice.platform, 'legal-privileged')
+  const participantView = (await participantSlice.platform.getMeetingPrivacyAccess(participant, 'meeting-1', 'privacy-participant'))
   assert.deepEqual(participantView.access, { posture: 'participant', authorized: true })
   assert.deepEqual(participantView.classification, {
     classification: 'legal-privileged', confidentiality: 'never-record', recordingProhibited: true,
@@ -440,20 +440,20 @@ test('privacy access read model distinguishes participant and management-chain v
   assert.equal('assertions' in participantView, false)
 
   const managementSlice = setup({ managementGrants: [{ tenantId: tenant, managerId: 'ceo', subordinateIds: ['alex'], expiresAt: '2026-10-01T00:00:00Z' }] })
-  createAndConsent(managementSlice.platform)
-  const managementView = managementSlice.platform.getMeetingPrivacyAccess({ tenantId: tenant, userId: 'ceo' }, 'meeting-1', 'privacy-management')
+  await createAndConsent(managementSlice.platform)
+  const managementView = (await managementSlice.platform.getMeetingPrivacyAccess({ tenantId: tenant, userId: 'ceo' }, 'meeting-1', 'privacy-management'))
   assert.deepEqual(managementView.access, { posture: 'management-chain', authorized: true })
 })
 
-test('privacy access denies unrelated callers and redacts immutable audit timeline identities and opaque values', () => {
+test('privacy access denies unrelated callers and redacts immutable audit timeline identities and opaque values', async () => {
   const { platform, audit } = setup()
-  createAndConsent(platform)
+  await createAndConsent(platform)
   audit.append({
     id: 'audit-private-id', correlationId: 'CORRELATION-SECRET', tenantId: tenant, principalId: 'sam', actorId: 'sam',
     resourceType: 'recording', resourceId: 'RECORDING-SECRET', meetingId: 'meeting-1', recordingId: 'RECORDING-SECRET',
     action: 'UNTRUSTED-ACTION-SECRET', outcome: 'UNTRUSTED-OUTCOME-SECRET', reason: 'UNTRUSTED-REASON-SECRET', occurredAt: '2026-09-30T12:00:00Z',
   })
-  const result = platform.getMeetingPrivacyAccess(participant, 'meeting-1', 'privacy-redaction')
+  const result = (await platform.getMeetingPrivacyAccess(participant, 'meeting-1', 'privacy-redaction'))
   const redacted = result.auditTimeline.find((event) => event.action === 'redacted-event')
   assert.deepEqual(redacted, {
     occurredAt: '2026-09-30T12:00:00Z', action: 'redacted-event', outcome: 'redacted', reason: 'REDACTED', immutable: true,
@@ -462,26 +462,26 @@ test('privacy access denies unrelated callers and redacts immutable audit timeli
   for (const value of ['CORRELATION-SECRET', 'RECORDING-SECRET', 'UNTRUSTED-REASON-SECRET', '"principalId"', '"actorId"']) {
     assert.equal(serialized.includes(value), false)
   }
-  assert.throws(() => platform.getMeetingPrivacyAccess({ tenantId: tenant, userId: 'outsider' }, 'meeting-1', 'privacy-denied'), { code: 'MEETING_NOT_FOUND' })
+  await assert.rejects(async () => (await platform.getMeetingPrivacyAccess({ tenantId: tenant, userId: 'outsider' }, 'meeting-1', 'privacy-denied')), { code: 'MEETING_NOT_FOUND' })
   const denied = audit.all().find((event) => event.correlationId === 'privacy-denied')
   assert.deepEqual({ action: denied.action, outcome: denied.outcome, reason: denied.reason }, {
     action: 'privacy-access.read', outcome: 'denied', reason: 'MEETING_FORBIDDEN',
   })
 })
 
-test('unauthorized matching meetings never enter AI context', () => {
+test('unauthorized matching meetings never enter AI context', async () => {
   const { platform, audit } = setup()
-  createAndConsent(platform, 'standard', 'meeting-private')
-  seedKnowledge(platform, 'meeting-private')
-  const context = platform.retrieveForAi({ tenantId: tenant, userId: 'outsider' }, 'privacy', 'corr-ai')
+  await createAndConsent(platform, 'standard', 'meeting-private')
+  await seedKnowledge(platform, 'meeting-private')
+  const context = (await platform.retrieveForAi({ tenantId: tenant, userId: 'outsider' }, 'privacy', 'corr-ai'))
   assert.deepEqual(context, [])
   assert.ok(audit.all().some((event) => event.correlationId === 'corr-ai' && event.action === 'ai.retrieve' && event.outcome === 'denied'))
 })
 
-test('tenant scope prevents cross-tenant lookup from revealing existence', () => {
+test('tenant scope prevents cross-tenant lookup from revealing existence', async () => {
   const { platform, audit } = setup()
-  createAndConsent(platform)
-  assert.throws(() => platform.getMeetingKnowledge({ tenantId: 'other', userId: 'sam' }, 'meeting-1', 'corr-cross'), { code: 'MEETING_NOT_FOUND' })
+  await createAndConsent(platform)
+  await assert.rejects(async () => (await platform.getMeetingKnowledge({ tenantId: 'other', userId: 'sam' }, 'meeting-1', 'corr-cross')), { code: 'MEETING_NOT_FOUND' })
   const event = audit.all().find((item) => item.correlationId === 'corr-cross')
   assert.deepEqual(
     { tenantId: event.tenantId, principalId: event.principalId, resourceId: event.resourceId, action: event.action, outcome: event.outcome, reason: event.reason },
@@ -489,65 +489,65 @@ test('tenant scope prevents cross-tenant lookup from revealing existence', () =>
   )
 })
 
-test('recording requires affirmative current consent from every required participant', () => {
+test('recording requires affirmative current consent from every required participant', async () => {
   for (const [decision, expected] of [['declined', 'CONSENT_NOT_GRANTED'], ['withdrawn', 'CONSENT_NOT_GRANTED']]) {
     const { platform } = setup()
-    createAndConsent(platform)
-    platform.recordConsent(participant, 'meeting-1', { participantId: participant.userId, capturedAt: '2026-09-30T11:59:05Z', expiresAt: '2026-09-30T13:00:00Z', policyVersion: 'v1', decision })
-    assert.throws(() => platform.authorizeRecording(organizer, 'meeting-1'), { code: expected })
+    await createAndConsent(platform)
+    await platform.recordConsent(participant, 'meeting-1', { participantId: participant.userId, capturedAt: '2026-09-30T11:59:05Z', expiresAt: '2026-09-30T13:00:00Z', policyVersion: 'v1', decision })
+    await assert.rejects(async () => (await platform.authorizeRecording(organizer, 'meeting-1')), { code: expected })
   }
 
   const expired = setup()
-  createAndConsent(expired.platform)
-  expired.platform.recordConsent(participant, 'meeting-1', { participantId: participant.userId, capturedAt: '2026-09-30T11:59:05Z', expiresAt: '2026-09-30T12:00:00Z', policyVersion: 'v1', decision: 'granted' })
-  assert.throws(() => expired.platform.authorizeRecording(organizer, 'meeting-1'), { code: 'CONSENT_EXPIRED' })
+  await createAndConsent(expired.platform)
+  await expired.platform.recordConsent(participant, 'meeting-1', { participantId: participant.userId, capturedAt: '2026-09-30T11:59:05Z', expiresAt: '2026-09-30T12:00:00Z', policyVersion: 'v1', decision: 'granted' })
+  await assert.rejects(async () => (await expired.platform.authorizeRecording(organizer, 'meeting-1')), { code: 'CONSENT_EXPIRED' })
 
   const stale = setup()
-  createAndConsent(stale.platform)
-  stale.platform.recordConsent(participant, 'meeting-1', { participantId: participant.userId, capturedAt: '2026-09-30T11:59:05Z', expiresAt: '2026-09-30T13:00:00Z', policyVersion: 'old', decision: 'granted' })
-  assert.throws(() => stale.platform.authorizeRecording(organizer, 'meeting-1'), { code: 'CONSENT_POLICY_MISMATCH' })
+  await createAndConsent(stale.platform)
+  await stale.platform.recordConsent(participant, 'meeting-1', { participantId: participant.userId, capturedAt: '2026-09-30T11:59:05Z', expiresAt: '2026-09-30T13:00:00Z', policyVersion: 'old', decision: 'granted' })
+  await assert.rejects(async () => (await stale.platform.authorizeRecording(organizer, 'meeting-1')), { code: 'CONSENT_POLICY_MISMATCH' })
 
   const malformed = setup()
-  malformed.platform.createMeeting(organizer, { id: 'meeting-1', tenantId: tenant, organizerId: organizer.userId, participantIds: [organizer.userId, participant.userId], classification: 'standard' })
-  assert.throws(() => malformed.platform.recordConsent(participant, 'meeting-1', { participantId: participant.userId, capturedAt: 'bad', expiresAt: 'also-bad', policyVersion: 'v1', decision: 'granted' }), { code: 'INVALID_CONSENT' })
+  await malformed.platform.createMeeting(organizer, { id: 'meeting-1', tenantId: tenant, organizerId: organizer.userId, participantIds: [organizer.userId, participant.userId], classification: 'standard' })
+  await assert.rejects(async () => (await malformed.platform.recordConsent(participant, 'meeting-1', { participantId: participant.userId, capturedAt: 'bad', expiresAt: 'also-bad', policyVersion: 'v1', decision: 'granted' })), { code: 'INVALID_CONSENT' })
 })
 
-test('unclassified, unknown, and organization-sensitive meetings fail closed without an explicit allow', () => {
+test('unclassified, unknown, and organization-sensitive meetings fail closed without an explicit allow', async () => {
   const unclassified = setup()
-  createAndConsent(unclassified.platform, null)
-  assert.throws(() => unclassified.platform.authorizeRecording(organizer, 'meeting-1'), { code: 'CLASSIFICATION_REQUIRED' })
+  await createAndConsent(unclassified.platform, null)
+  await assert.rejects(async () => (await unclassified.platform.authorizeRecording(organizer, 'meeting-1')), { code: 'CLASSIFICATION_REQUIRED' })
 
   const unknown = setup()
-  createAndConsent(unknown.platform, 'mystery-category')
-  assert.throws(() => unknown.platform.authorizeRecording(organizer, 'meeting-1'), { code: 'CLASSIFICATION_REQUIRED' })
+  await createAndConsent(unknown.platform, 'mystery-category')
+  await assert.rejects(async () => (await unknown.platform.authorizeRecording(organizer, 'meeting-1')), { code: 'CLASSIFICATION_REQUIRED' })
 
   const explicitlyClassified = setup({ sensitiveRecordingAllows: [{ tenantId: tenant, meetingId: 'meeting-1', classification: 'mystery-category', allowed: true, expiresAt: '2026-10-01T00:00:00Z' }] })
-  createAndConsent(explicitlyClassified.platform, 'mystery-category')
-  assert.equal(explicitlyClassified.platform.authorizeRecording(organizer, 'meeting-1').status, 'authorized')
+  await createAndConsent(explicitlyClassified.platform, 'mystery-category')
+  assert.equal((await explicitlyClassified.platform.authorizeRecording(organizer, 'meeting-1')).status, 'authorized')
 
   const sensitive = setup({ organizationSensitiveCategories: ['board-confidential'] })
-  createAndConsent(sensitive.platform, 'board-confidential')
-  assert.throws(() => sensitive.platform.authorizeRecording(organizer, 'meeting-1'), { code: 'SENSITIVE_RECORDING_DENIED' })
+  await createAndConsent(sensitive.platform, 'board-confidential')
+  await assert.rejects(async () => (await sensitive.platform.authorizeRecording(organizer, 'meeting-1')), { code: 'SENSITIVE_RECORDING_DENIED' })
 
   const allowed = setup({ organizationSensitiveCategories: ['board-confidential'], sensitiveRecordingAllows: [{ tenantId: tenant, meetingId: 'meeting-1', classification: 'board-confidential', allowed: true, expiresAt: '2026-10-01T00:00:00Z' }] })
-  createAndConsent(allowed.platform, 'board-confidential')
-  assert.equal(allowed.platform.authorizeRecording(organizer, 'meeting-1').status, 'authorized')
+  await createAndConsent(allowed.platform, 'board-confidential')
+  assert.equal((await allowed.platform.authorizeRecording(organizer, 'meeting-1')).status, 'authorized')
 })
 
-test('every non-active lifecycle state blocks reads, writes, and AI retrieval', () => {
+test('every non-active lifecycle state blocks reads, writes, and AI retrieval', async () => {
   for (const state of ['held', 'pending-deletion', 'deletion-in-progress', 'deleted', 'quarantined', 'pending-disposition']) {
     const { platform, meetings, audit } = setup()
-    createAndConsent(platform)
-    seedKnowledge(platform)
+    await createAndConsent(platform)
+    await seedKnowledge(platform)
     const record = meetings.get(tenant, 'meeting-1')
     record.retentionState = state
     meetings.save(record)
 
-    assert.throws(() => platform.getMeetingKnowledge(participant, 'meeting-1', `read-${state}`), { code: 'RETENTION_RESTRICTED' })
-    assert.throws(() => platform.addAssertions(organizer, 'meeting-1', [{ id: `assert-${state}`, kind: 'decision', text: 'blocked', citations: ['meeting-1-segment'] }], `write-${state}`), { code: 'RETENTION_RESTRICTED' })
-    assert.throws(() => platform.appendTranscript(organizer, 'meeting-1', record.recording, [{ id: `segment-${state}`, speakerId: 'sam', startMs: 0, endMs: 1, text: 'LIFECYCLE-CANARY', provenance: {} }], `append-${state}`), { code: 'RETENTION_RESTRICTED' })
-    assert.deepEqual(platform.searchKnowledge(participant, 'privacy', `search-${state}`), [])
-    assert.deepEqual(platform.retrieveForAi(participant, 'privacy', `ai-${state}`), [])
+    await assert.rejects(async () => (await platform.getMeetingKnowledge(participant, 'meeting-1', `read-${state}`)), { code: 'RETENTION_RESTRICTED' })
+    await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', [{ id: `assert-${state}`, kind: 'decision', text: 'blocked', citations: ['meeting-1-segment'] }], `write-${state}`)), { code: 'RETENTION_RESTRICTED' })
+    await assert.rejects(async () => (await platform.appendTranscript(organizer, 'meeting-1', record.recording, [{ id: `segment-${state}`, speakerId: 'sam', startMs: 0, endMs: 1, text: 'LIFECYCLE-CANARY', provenance: {} }], `append-${state}`)), { code: 'RETENTION_RESTRICTED' })
+    assert.deepEqual((await platform.searchKnowledge(participant, 'privacy', `search-${state}`)), [])
+    assert.deepEqual((await platform.retrieveForAi(participant, 'privacy', `ai-${state}`)), [])
 
     for (const correlationId of [`read-${state}`, `write-${state}`, `append-${state}`, `search-${state}`, `ai-${state}`]) {
       const event = audit.all().find((item) => item.correlationId === correlationId)

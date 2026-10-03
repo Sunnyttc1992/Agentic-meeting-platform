@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { invariant } from './errors.js'
 import {
   InMemoryAppendOnlyAudit,
@@ -202,10 +203,59 @@ export function assertMeetingStorageContract(storage) {
   assertTenantFacade(firstScope, firstTenant, 'scope', false)
   assertTenantFacade(secondScope, secondTenant, 'scope', false)
   invariant(firstScope !== secondScope, 'INVALID_STORAGE_ADAPTER', 'Storage scope must mint an isolated tenant capability')
-  const transactionFacade = storage.transaction({ tenantId: firstTenant }, (transaction) => transaction)
-  assertTenantFacade(transactionFacade, firstTenant, 'transaction', true)
-  invariant(transactionFacade !== firstScope, 'INVALID_STORAGE_ADAPTER', 'Transaction must mint an isolated tenant capability')
-  return storage
+  const checkTransactionFacade = (transactionFacade) => {
+    assertTenantFacade(transactionFacade, firstTenant, 'transaction', true)
+    invariant(transactionFacade !== firstScope, 'INVALID_STORAGE_ADAPTER', 'Transaction must mint an isolated tenant capability')
+    return storage
+  }
+  // Transactions may be asynchronous (a database round trip). The structural
+  // checks above still fail synchronously; this last check then resolves with
+  // the transaction, and callers await it before first use.
+  const exercised = storage.transaction({ tenantId: firstTenant }, (transaction) => transaction)
+  return exercised && typeof exercised.then === 'function' ? exercised.then(checkTransactionFacade) : checkTransactionFacade(exercised)
+}
+
+// Runs one storage transaction at a time. Work may be asynchronous; a nested
+// call (made while a transaction is running, in the same async context) joins
+// the outer transaction through `beginNested`/`commitNested`/`rollbackNested`
+// instead of waiting on itself. Serializing means an awaited step in one
+// request can never interleave its writes with another request's.
+export function createSerializedTransactionRunner({ begin, commit, rollback, beginNested = begin, commitNested = commit, rollbackNested = rollback }) {
+  const active = new AsyncLocalStorage()
+  let tail = Promise.resolve()
+  return async (work) => {
+    const depth = active.getStore()
+    if (depth !== undefined) {
+      const token = await beginNested(depth + 1)
+      let result
+      try {
+        result = await active.run(depth + 1, work)
+      } catch (error) {
+        await rollbackNested(token)
+        throw error
+      }
+      await commitNested(token)
+      return result
+    }
+    const previous = tail
+    let release
+    tail = new Promise((resolve) => { release = resolve })
+    await previous
+    try {
+      const token = await begin()
+      let result
+      try {
+        result = await active.run(0, work)
+      } catch (error) {
+        await rollback(token)
+        throw error
+      }
+      await commit(token)
+      return result
+    } finally {
+      release()
+    }
+  }
 }
 
 function assertTenantRecordList(scope, records, label) {
@@ -368,8 +418,9 @@ function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxE
 }
 
 // Composes repositories with the in-memory signatures into a validated storage
-// bundle. `runAtomically(work)` must run `work` synchronously and either keep
-// everything it wrote or roll all of it back.
+// bundle. `runAtomically(work)` runs `work` (which may be asynchronous) and
+// either keeps everything it wrote or rolls all of it back; use
+// `createSerializedTransactionRunner` so transactions cannot interleave.
 export function composeRepositoryStorage({ kind, repositories, runAtomically, beforeOutboxEnqueue = null }) {
   invariant(typeof runAtomically === 'function', 'INVALID_STORAGE_ADAPTER', 'Storage backends must provide an atomic transaction runner')
   const scopedFacade = (scope, options = {}) => tenantFacadeOver(repositories, scope, { ...options, beforeOutboxEnqueue })
@@ -378,11 +429,7 @@ export function composeRepositoryStorage({ kind, repositories, runAtomically, be
     scope: (scope) => scopedFacade(scope),
     transaction: (scope, operation) => {
       const normalized = tenantScope(scope)
-      return runAtomically(() => {
-        const result = operation(scopedFacade(normalized, { writable: true }))
-        invariant(!(result && typeof result.then === 'function'), 'ASYNC_STORAGE_TRANSACTION_UNSUPPORTED', 'Storage transactions must complete synchronously', 400)
-        return result
-      })
+      return runAtomically(() => operation(scopedFacade(normalized, { writable: true })))
     },
   })
 }
@@ -410,18 +457,14 @@ export function createInMemoryMeetingStorage({ shouldFailOutboxEnqueue = null } 
     kind: 'in-memory-prototype',
     repositories,
     beforeOutboxEnqueue: shouldFailOutboxEnqueue,
-    // Snapshot before the write facade is minted. This is a synchronous
-    // prototype of the all-or-nothing contract: if an outbox enqueue or a
-    // derived commitment write fails, canonical and outbox rows are restored
-    // together. Durable adapters supply a real database transaction instead.
-    runAtomically: (work) => {
-      const snapshots = Object.fromEntries(Object.entries(repositories).map(([name, repository]) => [name, repository.snapshot()]))
-      try {
-        return work()
-      } catch (error) {
-        for (const [name, repository] of Object.entries(repositories)) repository.restore(snapshots[name])
-        throw error
-      }
-    },
+    // Snapshot before the write facade is minted. This is the prototype of the
+    // all-or-nothing contract: if an outbox enqueue or a derived commitment
+    // write fails, canonical and outbox rows are restored together. Durable
+    // adapters supply a real database transaction instead.
+    runAtomically: createSerializedTransactionRunner({
+      begin: () => Object.fromEntries(Object.entries(repositories).map(([name, repository]) => [name, repository.snapshot()])),
+      commit: () => {},
+      rollback: (snapshots) => { for (const [name, repository] of Object.entries(repositories)) repository.restore(snapshots[name]) },
+    }),
   })
 }

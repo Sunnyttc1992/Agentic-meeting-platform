@@ -9,7 +9,7 @@ const tenant = 'northstar'
 const organizer = { tenantId: tenant, userId: 'alex' }
 const participant = { tenantId: tenant, userId: 'sam' }
 
-function setup({ classification = 'standard', retentionState = 'active', policyOptions = {} } = {}) {
+async function setup({ classification = 'standard', retentionState = 'active', policyOptions = {} } = {}) {
   const meetings = new InMemoryMeetingRepository()
   const audit = new InMemoryAppendOnlyAudit()
   const clock = new FixedClock('2026-09-30T12:00:00Z')
@@ -21,7 +21,7 @@ function setup({ classification = 'standard', retentionState = 'active', policyO
     policy: new PolicyEngine(policyOptions),
     authorizationTtlMs: 1_000,
   })
-  platform.createMeeting(organizer, {
+  await platform.createMeeting(organizer, {
     id: 'meeting-1', tenantId: tenant, organizerId: organizer.userId,
     participantIds: [organizer.userId, participant.userId], classification,
   })
@@ -32,7 +32,7 @@ function setup({ classification = 'standard', retentionState = 'active', policyO
 }
 
 async function withServer(options, run) {
-  const state = setup(options)
+  const state = (await setup(options))
   await new Promise((resolve) => state.server.listen(0, '127.0.0.1', resolve))
   const address = state.server.address()
   try { await run({ ...state, base: `http://127.0.0.1:${address.port}` }) }
@@ -279,11 +279,11 @@ test('commitment query endpoint refuses direct action writes and stays opaque fo
   await withServer({}, async ({ base, platform, audit }) => {
     await consentAll(base)
     const canary = 'HTTP-DIRECT-ACTION-CANARY'
-    assert.throws(() => platform.addAssertions(organizer, 'meeting-1', [{
+    await assert.rejects(async () => (await platform.addAssertions(organizer, 'meeting-1', [{
       id: 'http-action', kind: 'action', text: canary, citations: ['http-action-segment'],
       commitment: { ownerId: 'sam', deadline: '2026-10-15T17:00:00-04:00', status: 'open' },
       provenance: { source: 'speech-processor', canonicalOrigin: 'processor-normalized-v1' },
-    }]), { code: 'UNTRUSTED_ACTION_ASSERTION' })
+    }])), { code: 'UNTRUSTED_ACTION_ASSERTION' })
 
     const allowed = await get(base, '/commitments?query=dependency', participant, 'http-commitment-allowed')
     assert.equal(allowed.response.status, 200)
@@ -307,7 +307,7 @@ test('management briefing endpoint is tenant-scoped, cited, and neutral when no 
       id: 'brief-risk', tenantId: tenant, meetingId: 'meeting-1', kind: 'risk', text: 'Privacy review is a blocker.',
       citations: ['brief-segment'], provenance: { source: 'speech-processor', raw: 'HTTP-BRIEF-PROCESSOR-CANARY' },
     }])
-    platform.createMeeting(organizer, { id: 'hidden-brief', tenantId: tenant, organizerId: organizer.userId, participantIds: [organizer.userId, 'bob'], classification: 'standard' })
+    await platform.createMeeting(organizer, { id: 'hidden-brief', tenantId: tenant, organizerId: organizer.userId, participantIds: [organizer.userId, 'bob'], classification: 'standard' })
     platform.knowledge.addSegments([{ id: 'hidden-brief-segment', tenantId: tenant, meetingId: 'hidden-brief', startMs: 0, endMs: 1, diarizationLabel: 'SPEAKER_00', text: 'HTTP-HIDDEN-BRIEF-CANARY' }])
     platform.knowledge.addAssertions([{ id: 'hidden-brief-risk', tenantId: tenant, meetingId: 'hidden-brief', kind: 'risk', text: 'HTTP-HIDDEN-BRIEF-CANARY', citations: ['hidden-brief-segment'], provenance: {} }])
 
@@ -354,7 +354,7 @@ test('pipeline readiness is loopback-only, authentication-bound, and contains no
     assert.equal(audit.all().find((event) => event.correlationId === 'pipeline-readiness').action, 'teams.readiness')
   })
 
-  const { platform } = setup()
+  const { platform } = (await setup())
   const handler = createHttpHandler(platform, { pipelineReadiness: { inspect: () => ({ unexpected: 'must-not-be-returned' }) } })
   const response = { status: null, body: null, writeHead(status) { this.status = status }, end(body) { this.body = body } }
   await handler({ method: 'GET', url: '/pipeline/readiness', socket: { remoteAddress: '192.168.1.20' }, headers: { host: 'localhost:4173' } }, response)

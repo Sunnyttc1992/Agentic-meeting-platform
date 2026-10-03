@@ -96,33 +96,33 @@ test('a retained head anchor detects truncation and a wholesale chain rewrite', 
   assert.throws(() => verifyAuditChain(chain, { tenantId: tenant, anchor: { sequence: 1, hash: 'not-a-hash' } }), { code: 'INVALID_AUDIT_ANCHOR' })
 })
 
-function platformSetup({ auditReaderGrants = [], storage = null } = {}) {
+async function platformSetup({ auditReaderGrants = [], storage = null } = {}) {
   const audit = new InMemoryAppendOnlyAudit()
   const clock = new FixedClock('2026-09-30T12:00:00Z')
   const policy = new PolicyEngine({ auditReaderGrants, managementGrants: [{ tenantId: tenant, managerId: 'ceo', subordinateIds: ['alex'] }] })
   const platform = storage
     ? new MeetingIntelligencePlatform({ storage, clock, policy })
     : new MeetingIntelligencePlatform({ meetings: new InMemoryMeetingRepository(), knowledge: new InMemoryKnowledgeRepository(), audit, clock, policy })
-  platform.createMeeting(organizer, { id: 'meeting-1', tenantId: tenant, organizerId: 'alex', participantIds: ['alex', 'sam'], classification: 'standard' })
-  platform.getMeetingKnowledge(organizer, 'meeting-1', 'corr-read')
-  assert.throws(() => platform.getMeetingKnowledge({ tenantId: tenant, userId: 'outsider' }, 'meeting-1', 'corr-denied'))
+  await platform.createMeeting(organizer, { id: 'meeting-1', tenantId: tenant, organizerId: 'alex', participantIds: ['alex', 'sam'], classification: 'standard' })
+  await platform.getMeetingKnowledge(organizer, 'meeting-1', 'corr-read')
+  await assert.rejects(async () => (await platform.getMeetingKnowledge({ tenantId: tenant, userId: 'outsider' }, 'meeting-1', 'corr-denied')))
   return { platform, audit, clock }
 }
 
-test('audit integrity requires an explicit, current, same-tenant audit-reader grant and every attempt is audited', () => {
-  const { platform, audit, clock } = platformSetup({
+test('audit integrity requires an explicit, current, same-tenant audit-reader grant and every attempt is audited', async () => {
+  const { platform, audit, clock } = (await platformSetup({
     auditReaderGrants: [
       { tenantId: tenant, principalId: 'audra', expiresAt: '2026-09-30T13:00:00Z' },
       { tenantId: 'southstar', principalId: 'mallory' },
     ],
-  })
+  }))
   for (const [actor, label] of [[organizer, 'organizer'], [{ tenantId: tenant, userId: 'ceo' }, 'manager'], [{ tenantId: tenant, userId: 'mallory' }, 'other-tenant grant']]) {
-    assert.throws(() => platform.verifyAuditIntegrity(actor, {}, `corr-deny-${label}`), { code: 'AUDIT_READER_REQUIRED' }, label)
+    await assert.rejects(async () => (await platform.verifyAuditIntegrity(actor, {}, `corr-deny-${label}`)), { code: 'AUDIT_READER_REQUIRED' }, label)
     const denial = audit.all().at(-1)
     assert.deepEqual([denial.action, denial.outcome, denial.reason, denial.correlationId], ['audit.verify', 'denied', 'AUDIT_READER_REQUIRED', `corr-deny-${label}`])
   }
 
-  const result = platform.verifyAuditIntegrity(auditor, {}, 'corr-verify')
+  const result = (await platform.verifyAuditIntegrity(auditor, {}, 'corr-verify'))
   assert.deepEqual(Object.keys(result).sort(), ['checked', 'failure', 'head', 'valid'])
   assert.equal(result.valid, true)
   assert.equal(result.checked, audit.chain(tenant).length - 1, 'the verification event follows the reported head')
@@ -130,27 +130,27 @@ test('audit integrity requires an explicit, current, same-tenant audit-reader gr
   assert.equal(audit.all().at(-1).outcome, 'allowed')
   assert.equal(verifyAuditChain(audit.chain(tenant), { tenantId: tenant }).valid, true)
 
-  const anchored = platform.verifyAuditIntegrity(auditor, { anchor: result.head }, 'corr-anchored')
+  const anchored = (await platform.verifyAuditIntegrity(auditor, { anchor: result.head }, 'corr-anchored'))
   assert.equal(anchored.valid, true)
 
   clock.advance(60 * 60 * 1000)
-  assert.throws(() => platform.verifyAuditIntegrity(auditor, {}, 'corr-expired'), { code: 'AUDIT_READER_REQUIRED' })
+  await assert.rejects(async () => (await platform.verifyAuditIntegrity(auditor, {}, 'corr-expired')), { code: 'AUDIT_READER_REQUIRED' })
 })
 
-test('audit integrity output is content-free and reports tampering only as a reason code', () => {
-  const { platform, audit } = platformSetup({ auditReaderGrants: [{ tenantId: tenant, principalId: 'audra' }] })
+test('audit integrity output is content-free and reports tampering only as a reason code', async () => {
+  const { platform, audit } = (await platformSetup({ auditReaderGrants: [{ tenantId: tenant, principalId: 'audra' }] }))
   const tampered = audit.chain(tenant)
   tampered[1] = { ...tampered[1], outcome: 'TAMPER-CANARY' }
   const result = verifyAuditChain(tampered, { tenantId: tenant })
   assert.deepEqual(result.failure, { sequence: 2, reason: 'HASH_MISMATCH' })
   assert.doesNotMatch(JSON.stringify(result), /TAMPER-CANARY|meeting-1|corr-|alex|outsider/)
-  assert.doesNotMatch(JSON.stringify(platform.verifyAuditIntegrity(auditor)), /meeting-1|corr-|alex|outsider|knowledge\.read/)
+  assert.doesNotMatch(JSON.stringify((await platform.verifyAuditIntegrity(auditor))), /meeting-1|corr-|alex|outsider|knowledge\.read/)
 })
 
-test('storage-backed platforms verify the audit chain through the tenant facade', () => {
+test('storage-backed platforms verify the audit chain through the tenant facade', async () => {
   const storage = createInMemoryMeetingStorage()
-  const { platform } = platformSetup({ storage, auditReaderGrants: [{ tenantId: tenant, principalId: 'audra' }] })
-  const result = platform.verifyAuditIntegrity(auditor, {}, 'corr-storage')
+  const { platform } = (await platformSetup({ storage, auditReaderGrants: [{ tenantId: tenant, principalId: 'audra' }] }))
+  const result = (await platform.verifyAuditIntegrity(auditor, {}, 'corr-storage'))
   assert.equal(result.valid, true)
   assert.ok(result.checked >= 3)
   const chain = storage.scope({ tenantId: tenant }).audit.chain()
@@ -160,7 +160,7 @@ test('storage-backed platforms verify the audit chain through the tenant facade'
 })
 
 test('audit integrity HTTP route enforces the grant and strict anchor parameters', async () => {
-  const { platform } = platformSetup({ auditReaderGrants: [{ tenantId: tenant, principalId: 'audra' }] })
+  const { platform } = (await platformSetup({ auditReaderGrants: [{ tenantId: tenant, principalId: 'audra' }] }))
   const server = createHttpServer(platform)
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const base = `http://127.0.0.1:${server.address().port}`

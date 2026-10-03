@@ -115,9 +115,11 @@ const view = (recording) => ({
 // repository call shape while each operation enters through a tenant-bound
 // storage facade.  The raw adapter remains only in these closures and is
 // never attached to the platform instance.
-function scopedStorageRepositories(storage) {
-  const read = (tenantId) => storage.scope({ tenantId })
-  const write = (tenantId, operation) => storage.transaction({ tenantId }, operation)
+function scopedStorageRepositories(storage, ready) {
+  // Every read and write first waits for the storage contract check, whose
+  // final transaction-isolation step may be asynchronous.
+  const read = async (tenantId) => { await ready; return storage.scope({ tenantId }) }
+  const write = async (tenantId, operation) => { await ready; return storage.transaction({ tenantId }, operation) }
   const tenantFromRows = (rows, label) => {
     if (!Array.isArray(rows) || rows.length === 0) return null
     const tenantId = rows[0]?.tenantId
@@ -127,13 +129,13 @@ function scopedStorageRepositories(storage) {
   }
   return Object.freeze({
     meetings: Object.freeze({
-      get: (tenantId, meetingId) => read(tenantId).meetings.get(meetingId),
-      list: (tenantId) => read(tenantId).meetings.list(),
+      get: async (tenantId, meetingId) => (await read(tenantId)).meetings.get(meetingId),
+      list: async (tenantId) => (await read(tenantId)).meetings.list(),
       save: (record) => write(record.tenantId, (transaction) => transaction.meetings.save(record)),
     }),
     knowledge: Object.freeze({
-      forMeeting: (tenantId, meetingId) => read(tenantId).knowledge.forMeeting(meetingId),
-      meetingIdsMatching: (tenantId, query) => read(tenantId).knowledge.meetingIdsMatching(query),
+      forMeeting: async (tenantId, meetingId) => (await read(tenantId)).knowledge.forMeeting(meetingId),
+      meetingIdsMatching: async (tenantId, query) => (await read(tenantId)).knowledge.meetingIdsMatching(query),
       clearMeeting: (tenantId, meetingId) => write(tenantId, (transaction) => transaction.knowledge.clearMeeting(meetingId)),
       addSegments: (rows) => {
         const tenantId = tenantFromRows(rows, 'Transcript segments')
@@ -145,8 +147,8 @@ function scopedStorageRepositories(storage) {
       },
     }),
     recordings: Object.freeze({
-      get: (tenantId, recordingId) => read(tenantId).recordings.get(recordingId),
-      listForMeeting: (tenantId, meetingId) => read(tenantId).recordings.listForMeeting(meetingId),
+      get: async (tenantId, recordingId) => (await read(tenantId)).recordings.get(recordingId),
+      listForMeeting: async (tenantId, meetingId) => (await read(tenantId)).recordings.listForMeeting(meetingId),
       save: (record) => write(record.tenantId, (transaction) => transaction.recordings.save(record)),
       putBytes: (tenantId, recordingId, bytes) => write(tenantId, (transaction) => transaction.recordings.putBytes(recordingId, bytes)),
       getBytes: (tenantId, recordingId) => write(tenantId, (transaction) => transaction.recordings.getBytes(recordingId)),
@@ -154,17 +156,17 @@ function scopedStorageRepositories(storage) {
     }),
     audit: Object.freeze({
       append: (event) => write(event.tenantId, (transaction) => transaction.audit.append(event)),
-      forMeeting: (tenantId, meetingId) => read(tenantId).audit.forMeeting(meetingId),
-      chain: (tenantId) => read(tenantId).audit.chain(),
+      forMeeting: async (tenantId, meetingId) => (await read(tenantId)).audit.forMeeting(meetingId),
+      chain: async (tenantId) => (await read(tenantId)).audit.chain(),
     }),
     commitments: Object.freeze({
-      query: (tenantId, query) => read(tenantId).commitments.query(query),
+      query: async (tenantId, query) => (await read(tenantId)).commitments.query(query),
       replaceMeeting: (tenantId, meetingId, knowledge) => write(tenantId, (transaction) => transaction.commitments.replaceMeeting(meetingId, knowledge)),
       clearMeeting: (tenantId, meetingId) => write(tenantId, (transaction) => transaction.commitments.clearMeeting(meetingId)),
     }),
     outbox: Object.freeze({
       enqueue: (event) => write(event.tenantId, (transaction) => transaction.outbox.enqueue(event)),
-      list: (tenantId) => read(tenantId).outbox.list(),
+      list: async (tenantId) => (await read(tenantId)).outbox.list(),
     }),
   })
 }
@@ -404,9 +406,13 @@ export class MeetingIntelligencePlatform {
     // can pass a validated tenant-scoped transactional adapter as one unit.
     let scopedOutbox = null
     if (storage) {
-      assertMeetingStorageContract(storage)
+      // Structural contract failures throw here, synchronously. The final
+      // transaction-isolation check may be asynchronous; it is awaited before
+      // the first read or write instead (a failure surfaces on first use).
+      const storageReady = Promise.resolve(assertMeetingStorageContract(storage))
+      storageReady.catch(() => {})
       const storageFacade = storage
-      const scoped = scopedStorageRepositories(storageFacade)
+      const scoped = scopedStorageRepositories(storageFacade, storageReady)
       meetings ??= scoped.meetings
       knowledge ??= scoped.knowledge
       recordings ??= scoped.recordings
@@ -417,7 +423,10 @@ export class MeetingIntelligencePlatform {
       // to make state transitions and their outbox rows one transaction when
       // a storage bundle is present; callers can never obtain the bundle or a
       // raw repository from the platform.
-      this.#tenantTransaction = (tenantId, operation) => storageFacade.transaction({ tenantId }, operation)
+      this.#tenantTransaction = async (tenantId, operation) => {
+        await storageReady
+        return storageFacade.transaction({ tenantId }, operation)
+      }
       // Do not retain even the bundle's scope entrypoint on the runtime. The
       // only platform fields are the narrowed repository adapters above;
       // every one closes over a single tenant-bound facade operation.
@@ -461,7 +470,7 @@ export class MeetingIntelligencePlatform {
     return `meeting-ledger:v1:${type}:${aggregateId}:${revision}`
   }
 
-  #emitOutbox({ tenantId, type, aggregateType, aggregateId, revision, payload }, transaction = null) {
+  async #emitOutbox({ tenantId, type, aggregateType, aggregateId, revision, payload }, transaction = null) {
     // Legacy repository construction intentionally has no outbox. This keeps
     // backwards-compatible tests operating while every storage-bundle-backed
     // platform obtains the transaction-scoped capability above.
@@ -480,47 +489,47 @@ export class MeetingIntelligencePlatform {
       payload: Object.freeze({ ...payload }),
       occurredAt: this.clock.now().toISOString(),
     }
-    if (transaction) return transaction.outbox.enqueue(event)
+    if (transaction) return (await transaction.outbox.enqueue(event))
     // A storage-backed platform does not call a global repository. It enters
     // a fresh tenant transaction facade even for an event-only transition.
-    if (this.#tenantTransaction) return this.#tenantTransaction(tenantId, (facade) => facade.outbox.enqueue(event))
-    return repository.enqueue(event)
+    if (this.#tenantTransaction) return (await this.#tenantTransaction(tenantId, async (facade) => (await facade.outbox.enqueue(event))))
+    return (await repository.enqueue(event))
   }
 
-  #commitmentCount(tenantId, meetingId, commitments = this.commitments) {
-    const rows = commitments === this.commitments ? commitments.query(tenantId, '') : commitments.query('')
+  async #commitmentCount(tenantId, meetingId, commitments = this.commitments) {
+    const rows = commitments === this.commitments ? (await commitments.query(tenantId, '')) : (await commitments.query(''))
     return rows.filter((item) => item.meetingId === meetingId).length
   }
 
-  #emitKnowledgeChange(meetingRecord, revision, { commitmentsChanged = false, transaction = null, knowledge = this.knowledge, commitments = this.commitments } = {}) {
+  async #emitKnowledgeChange(meetingRecord, revision, { commitmentsChanged = false, transaction = null, knowledge = this.knowledge, commitments = this.commitments } = {}) {
     // Once a meeting is outside active retention, downstream consumers must
     // not be told that knowledge exists or changed. Deletion gets its own
     // content-free disposition event below.
     if (!OUTBOX_RETENTION_VISIBLE_STATES.has(meetingRecord.retentionState)) return
     const snapshot = knowledge === this.knowledge
-      ? knowledge.forMeeting(meetingRecord.tenantId, meetingRecord.id)
-      : knowledge.forMeeting(meetingRecord.id)
+      ? (await knowledge.forMeeting(meetingRecord.tenantId, meetingRecord.id))
+      : (await knowledge.forMeeting(meetingRecord.id))
     const payload = Object.freeze({
       state: 'available',
       segmentCount: snapshot.segments.length,
       assertionCount: snapshot.assertions.length,
     })
-    this.#emitOutbox({
+    await this.#emitOutbox({
       tenantId: meetingRecord.tenantId,
       type: 'knowledge.changed', aggregateType: 'meeting', aggregateId: meetingRecord.id,
       revision, payload,
     }, transaction)
     if (commitmentsChanged) {
-      this.#emitOutbox({
+      await this.#emitOutbox({
         tenantId: meetingRecord.tenantId,
         type: 'commitments.changed', aggregateType: 'meeting', aggregateId: meetingRecord.id,
-        revision, payload: Object.freeze({ state: 'available', commitmentCount: this.#commitmentCount(meetingRecord.tenantId, meetingRecord.id, commitments) }),
+        revision, payload: Object.freeze({ state: 'available', commitmentCount: (await this.#commitmentCount(meetingRecord.tenantId, meetingRecord.id, commitments)) }),
       }, transaction)
     }
   }
 
-  #audit({ correlationId, principal: actor, action, meetingId = null, recordingId = null, outcome, reason = null }) {
-    this.audit.append({
+  async #audit({ correlationId, principal: actor, action, meetingId = null, recordingId = null, outcome, reason = null }) {
+    await this.audit.append({
       id: randomUUID(), correlationId, tenantId: actor.tenantId, principalId: actor.userId,
       actorId: actor.userId, resourceType: recordingId ? 'recording' : 'meeting',
       resourceId: recordingId ?? meetingId, meetingId, recordingId, action, outcome, reason,
@@ -528,13 +537,13 @@ export class MeetingIntelligencePlatform {
     })
   }
 
-  #audited(actor, correlationId, action, meetingId, operation, recordingId = null) {
+  async #audited(actor, correlationId, action, meetingId, operation, recordingId = null) {
     try {
-      const result = operation()
-      this.#audit({ correlationId, principal: actor, action, meetingId, recordingId, outcome: 'allowed' })
+      const result = (await operation())
+      await this.#audit({ correlationId, principal: actor, action, meetingId, recordingId, outcome: 'allowed' })
       return result
     } catch (error) {
-      this.#audit({ correlationId, principal: actor, action, meetingId, recordingId, outcome: 'denied', reason: error?.auditReason ?? error?.code ?? 'UNEXPECTED_ERROR' })
+      await this.#audit({ correlationId, principal: actor, action, meetingId, recordingId, outcome: 'denied', reason: error?.auditReason ?? error?.code ?? 'UNEXPECTED_ERROR' })
       throw error
     }
   }
@@ -547,17 +556,17 @@ export class MeetingIntelligencePlatform {
     return error
   }
 
-  #meeting(tenantId, meetingId) {
+  async #meeting(tenantId, meetingId) {
     // The platform never retains a storage bundle. Its narrowed meeting
     // adapter is tenant-first whether it came from a bundle or legacy test
     // repositories, so callers cannot reach an alternate storage scope.
-    const record = this.meetings.get(tenantId, meetingId)
+    const record = (await this.meetings.get(tenantId, meetingId))
     if (!record) throw new DomainError('MEETING_NOT_FOUND', 'Meeting not found', 404)
     return record
   }
 
-  #recording(actor, meetingId, recordingId, organizerOnly = false) {
-    const record = this.recordings?.get(actor.tenantId, recordingId)
+  async #recording(actor, meetingId, recordingId, organizerOnly = false) {
+    const record = (await this.recordings?.get(actor.tenantId, recordingId))
     if (!record || record.tenantId !== actor.tenantId || record.meetingId !== meetingId) {
       throw new DomainError('RECORDING_NOT_FOUND', 'Recording not found', 404)
     }
@@ -575,11 +584,11 @@ export class MeetingIntelligencePlatform {
     return POLICY_REASON_CODES.has(code) ? code : POLICY_REVOKED
   }
 
-  #syncCommitments(tenantId, meetingId, { knowledge = this.knowledge, commitments = this.commitments } = {}) {
+  async #syncCommitments(tenantId, meetingId, { knowledge = this.knowledge, commitments = this.commitments } = {}) {
     // The registry may consume only the already canonicalized knowledge
     // repository. It never receives a processor response or request body.
-    if (knowledge === this.knowledge) commitments.replaceMeeting(tenantId, meetingId, knowledge.forMeeting(tenantId, meetingId))
-    else commitments.replaceMeeting(meetingId, knowledge.forMeeting(meetingId))
+    if (knowledge === this.knowledge) await commitments.replaceMeeting(tenantId, meetingId, (await knowledge.forMeeting(tenantId, meetingId)))
+    else await commitments.replaceMeeting(meetingId, (await knowledge.forMeeting(meetingId)))
   }
 
   #classificationSummary(meetingRecord) {
@@ -603,8 +612,8 @@ export class MeetingIntelligencePlatform {
     })
   }
 
-  #redactedAuditTimeline(tenantId, meetingId) {
-    const events = this.audit.forMeeting(tenantId, meetingId)
+  async #redactedAuditTimeline(tenantId, meetingId) {
+    const events = (await this.audit.forMeeting(tenantId, meetingId))
     return Object.freeze(events
       .slice(-AUDIT_TIMELINE_LIMIT)
       .map((event) => Object.freeze({
@@ -648,18 +657,18 @@ export class MeetingIntelligencePlatform {
       && lease?.policyFingerprint === this.#leasePolicyFingerprint(meetingRecord)
   }
 
-  #revokeLease(meetingRecord, reason = 'RECORDING_POLICY_CHANGED') {
+  async #revokeLease(meetingRecord, reason = 'RECORDING_POLICY_CHANGED') {
     const lease = meetingRecord.recording
     if (!lease?.leaseId || lease.status === 'revoked') return
     lease.status = 'revoked'
     lease.revokedAt = this.clock.now().toISOString()
     lease.revocationReason = this.#safePolicyReason(reason)
-    this.meetings.save(meetingRecord)
+    await this.meetings.save(meetingRecord)
   }
 
-  #revokeLeaseIfStale(meetingRecord) {
+  async #revokeLeaseIfStale(meetingRecord) {
     if (meetingRecord.recording?.leaseId && !this.#leaseMatchesCurrentPolicy(meetingRecord, meetingRecord.recording)) {
-      this.#revokeLease(meetingRecord)
+      await this.#revokeLease(meetingRecord)
       return true
     }
     return false
@@ -812,10 +821,10 @@ export class MeetingIntelligencePlatform {
     }
   }
 
-  #quarantineRecording(meetingRecord, recordingId, reason) {
+  async #quarantineRecording(meetingRecord, recordingId, reason) {
     if (this.#tenantTransaction) {
-      return this.#tenantTransaction(meetingRecord.tenantId, (transaction) => {
-        const record = transaction.recordings.get(recordingId)
+      return (await this.#tenantTransaction(meetingRecord.tenantId, async (transaction) => {
+        const record = (await transaction.recordings.get(recordingId))
         let transitioned = false
         if (record && !['deleted', 'completed'].includes(record.state)) {
           transitioned = record.state !== 'quarantined'
@@ -824,22 +833,22 @@ export class MeetingIntelligencePlatform {
           record.error = POLICY_REVOKED
           record.processor = null
           record.dispositionReason = this.#safePolicyReason(reason)
-          transaction.recordings.save(record)
-          if (DELETE_BYTES_ON_REVOKE.has(meetingRecord.retentionState)) transaction.recordings.clearContent(record.id)
+          await transaction.recordings.save(record)
+          if (DELETE_BYTES_ON_REVOKE.has(meetingRecord.retentionState)) await transaction.recordings.clearContent(record.id)
         }
-        transaction.knowledge.clearMeeting(meetingRecord.id)
-        transaction.commitments.clearMeeting(meetingRecord.id)
+        await transaction.knowledge.clearMeeting(meetingRecord.id)
+        await transaction.commitments.clearMeeting(meetingRecord.id)
         if (transitioned && record && meetingRecord.retentionState !== 'deleted') {
-          this.#emitOutbox({
+          await this.#emitOutbox({
             tenantId: meetingRecord.tenantId,
             type: 'recording.quarantined', aggregateType: 'recording', aggregateId: record.id,
             revision: 'quarantined',
             payload: Object.freeze({ state: 'quarantined', reason: this.#safePolicyReason(reason) }),
           }, transaction)
         }
-      })
+      }))
     }
-    const record = this.recordings?.get(meetingRecord.tenantId, recordingId)
+    const record = (await this.recordings?.get(meetingRecord.tenantId, recordingId))
     let transitioned = false
     if (record && !['deleted', 'completed'].includes(record.state)) {
       transitioned = record.state !== 'quarantined'
@@ -848,13 +857,13 @@ export class MeetingIntelligencePlatform {
       record.error = POLICY_REVOKED
       record.processor = null
       record.dispositionReason = this.#safePolicyReason(reason)
-      this.recordings.save(record)
-      if (DELETE_BYTES_ON_REVOKE.has(meetingRecord.retentionState)) this.recordings.clearContent(meetingRecord.tenantId, record.id)
+      await this.recordings.save(record)
+      if (DELETE_BYTES_ON_REVOKE.has(meetingRecord.retentionState)) await this.recordings.clearContent(meetingRecord.tenantId, record.id)
     }
-    this.knowledge.clearMeeting(meetingRecord.tenantId, meetingRecord.id)
-    this.commitments.clearMeeting(meetingRecord.tenantId, meetingRecord.id)
+    await this.knowledge.clearMeeting(meetingRecord.tenantId, meetingRecord.id)
+    await this.commitments.clearMeeting(meetingRecord.tenantId, meetingRecord.id)
     if (transitioned && record && meetingRecord.retentionState !== 'deleted') {
-      this.#emitOutbox({
+      await this.#emitOutbox({
         tenantId: meetingRecord.tenantId,
         type: 'recording.quarantined', aggregateType: 'recording', aggregateId: record.id,
         revision: 'quarantined',
@@ -863,95 +872,95 @@ export class MeetingIntelligencePlatform {
     }
   }
 
-  #quarantine(meetingRecord, reason) {
-    for (const record of this.recordings?.listForMeeting(meetingRecord.tenantId, meetingRecord.id) ?? []) {
-      this.#quarantineRecording(meetingRecord, record.id, reason)
+  async #quarantine(meetingRecord, reason) {
+    for (const record of (await this.recordings?.listForMeeting(meetingRecord.tenantId, meetingRecord.id)) ?? []) {
+      await this.#quarantineRecording(meetingRecord, record.id, reason)
     }
   }
 
-  #auditProcessingDenial(correlationId, actor, recording, reason) {
-    this.#audit({
+  async #auditProcessingDenial(correlationId, actor, recording, reason) {
+    await this.#audit({
       correlationId, principal: actor, action: 'recording.process.complete',
       meetingId: recording?.meetingId ?? null, recordingId: recording?.id ?? null,
       outcome: 'denied', reason: this.#safePolicyReason(reason),
     })
   }
 
-  #processorFailure(recordingId, correlationId, actor) {
-    const record = this.recordings.get(actor.tenantId, recordingId)
+  async #processorFailure(recordingId, correlationId, actor) {
+    const record = (await this.recordings.get(actor.tenantId, recordingId))
     if (record && !['quarantined', 'deleted'].includes(record.state)) {
       record.state = 'failed'
       record.progress = 100
       record.error = PROCESSOR_FAILED
       record.processor = null
-      this.recordings.save(record)
-      this.knowledge.clearMeeting(record.tenantId, record.meetingId)
-      this.commitments.clearMeeting(record.tenantId, record.meetingId)
+      await this.recordings.save(record)
+      await this.knowledge.clearMeeting(record.tenantId, record.meetingId)
+      await this.commitments.clearMeeting(record.tenantId, record.meetingId)
     }
     // Processor failures are deliberately not outbox events. The processor is
     // untrusted and a failed payload must never become a downstream signal or
     // metadata channel; audit remains the separate, redacted evidence trail.
-    this.#audit({
+    await this.#audit({
       correlationId, principal: actor, action: 'recording.process.complete',
       meetingId: record?.meetingId ?? null, recordingId, outcome: 'denied', reason: PROCESSOR_FAILED,
     })
   }
 
-  createMeeting(input, body, correlationId = randomUUID()) {
+  async createMeeting(input, body, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'meeting.create', body?.id, () => {
+    return (await this.#audited(actor, correlationId, 'meeting.create', body?.id, async () => {
       invariant(actor.tenantId === body.tenantId && actor.userId === body.organizerId, 'CREATE_FORBIDDEN', 'Organizer must create the meeting in their tenant', 403)
-      return this.meetings.save(meeting(body))
-    })
+      return (await this.meetings.save(meeting(body)))
+    }))
   }
 
-  recordConsent(input, meetingId, body, correlationId = randomUUID()) {
+  async recordConsent(input, meetingId, body, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'consent.record', meetingId, () => {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+    return (await this.#audited(actor, correlationId, 'consent.record', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       invariant(actor.userId === body.participantId && meetingRecord.participantIds.includes(actor.userId), 'CONSENT_FORBIDDEN', 'Participants may record only their own consent', 403)
       meetingRecord.consentEvidence = meetingRecord.consentEvidence.filter((item) => item.participantId !== actor.userId)
       meetingRecord.consentEvidence.push(consentEvidence(body))
-      this.meetings.save(meetingRecord)
-      this.#revokeLeaseIfStale(meetingRecord)
-      if (body.decision !== 'granted') this.#quarantine(meetingRecord, 'CONSENT_NOT_GRANTED')
-    })
+      await this.meetings.save(meetingRecord)
+      await this.#revokeLeaseIfStale(meetingRecord)
+      if (body.decision !== 'granted') await this.#quarantine(meetingRecord, 'CONSENT_NOT_GRANTED')
+    }))
   }
 
   // Re-derives the caller tenant's audit hash chain. The response contains only
   // sequence numbers, the head hash, and an allowlisted failure reason. The
   // verification is itself audited after the check, so it extends the chain
   // one event beyond the head it reports.
-  verifyAuditIntegrity(input, { anchor = null } = {}, correlationId = randomUUID()) {
+  async verifyAuditIntegrity(input, { anchor = null } = {}, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'audit.verify', null, () => {
+    return (await this.#audited(actor, correlationId, 'audit.verify', null, async () => {
       this.policy.require(this.policy.auditIntegrity({ principal: actor, now: this.clock.now() }))
       invariant(typeof this.audit.chain === 'function', 'AUDIT_INTEGRITY_UNAVAILABLE', 'Audit store does not expose a verifiable chain', 503)
-      return verifyAuditChain(this.audit.chain(actor.tenantId), { tenantId: actor.tenantId, anchor })
-    })
+      return verifyAuditChain((await this.audit.chain(actor.tenantId)), { tenantId: actor.tenantId, anchor })
+    }))
   }
 
-  getTeamsReadiness(input, correlationId = randomUUID()) {
+  async getTeamsReadiness(input, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'teams.readiness', null, () => this.teamsIntegration.readiness())
+    return (await this.#audited(actor, correlationId, 'teams.readiness', null, () => this.teamsIntegration.readiness()))
   }
 
-  prepareTeamsImport(input, meetingId, body, correlationId = randomUUID()) {
+  async prepareTeamsImport(input, meetingId, body, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'teams.import.prepare', meetingId, () => {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+    return (await this.#audited(actor, correlationId, 'teams.import.prepare', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       // Import authorization is intentionally governed by the same policy gate
       // as microphone capture: organizer, classification, retention, and each
       // required participant's explicit current consent are all re-evaluated.
       this.#capturePolicy(actor, meetingRecord)
       return this.teamsIntegration.prepareImport(body)
-    })
+    }))
   }
 
-  authorizeRecording(input, meetingId, correlationId = randomUUID()) {
+  async authorizeRecording(input, meetingId, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'recording.preflight', meetingId, () => {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+    return (await this.#audited(actor, correlationId, 'recording.preflight', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       this.#capturePolicy(actor, meetingRecord)
       const now = this.clock.now()
       meetingRecord.recording = {
@@ -964,17 +973,17 @@ export class MeetingIntelligencePlatform {
         authorizationExpiresAt: new Date(now.getTime() + this.authorizationTtlMs).toISOString(),
       }
       meetingRecord.recording.authorizationId = meetingRecord.recording.leaseId
-      this.meetings.save(meetingRecord)
+      await this.meetings.save(meetingRecord)
       return structuredClone(meetingRecord.recording)
-    })
+    }))
   }
 
-  createRecording(input, meetingId, body, correlationId = randomUUID()) {
+  async createRecording(input, meetingId, body, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'recording.create', meetingId, () => {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+    return (await this.#audited(actor, correlationId, 'recording.create', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       const staleLease = meetingRecord.recording?.leaseId && !this.#leaseMatchesCurrentPolicy(meetingRecord, meetingRecord.recording)
-      if (staleLease) this.#revokeLease(meetingRecord)
+      if (staleLease) await this.#revokeLease(meetingRecord)
       this.#capturePolicy(actor, meetingRecord)
       const lease = meetingRecord.recording
       invariant(lease?.leaseId === body.leaseId, 'INVALID_RECORDING_LEASE', 'Recording lease does not match', 403)
@@ -990,24 +999,24 @@ export class MeetingIntelligencePlatform {
       invariant(Number.isSafeInteger(body.byteLength) && body.byteLength > 0 && body.byteLength <= lease.maxBytes, 'INVALID_BYTE_LENGTH', 'Recording size is invalid', 413)
       invariant(typeof body.sha256 === 'string' && /^[0-9a-f]{64}$/.test(body.sha256), 'INVALID_SHA256', 'sha256 must be exact lower-case hexadecimal', 400)
       lease.usedAt = this.clock.now().toISOString()
-      this.meetings.save(meetingRecord)
-      const recording = this.recordings.save({
+      await this.meetings.save(meetingRecord)
+      const recording = (await this.recordings.save({
         id: randomUUID(), tenantId: actor.tenantId, meetingId, organizerId: actor.userId,
         policyVersion: lease.policyVersion, classification: lease.classification,
         policyFingerprint: lease.policyFingerprint, leaseId: lease.leaseId,
         contentType, byteLength: body.byteLength, sha256: body.sha256,
         state: 'created', progress: 0, uploadedAt: null, bytes: null, processor: null, error: null,
-      })
+      }))
       return { recordingId: recording.id, uploadRoute: `/meetings/${meetingId}/recordings/${recording.id}/bytes`, state: recording.state }
-    })
+    }))
   }
 
-  uploadRecording(input, meetingId, recordingId, { contentType, contentLength, bytes }, correlationId = randomUUID()) {
+  async uploadRecording(input, meetingId, recordingId, { contentType, contentLength, bytes }, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'recording.upload', meetingId, () => {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+    return (await this.#audited(actor, correlationId, 'recording.upload', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       this.#capturePolicy(actor, meetingRecord)
-      const recording = this.#recording(actor, meetingId, recordingId, true)
+      const recording = (await this.#recording(actor, meetingId, recordingId, true))
       invariant(this.#leaseMatchesCurrentPolicy(meetingRecord, recording), 'RECORDING_POLICY_CHANGED', 'Recording authorization no longer matches current policy', 403)
       invariant(recording.state === 'created' && !recording.uploadedAt, 'DUPLICATE_UPLOAD', 'Recording bytes may be uploaded once', 409)
       invariant(normalizeIngestMimeType(contentType) === recording.contentType, 'CONTENT_TYPE_MISMATCH', 'Content-Type does not match declared metadata', 415)
@@ -1017,233 +1026,233 @@ export class MeetingIntelligencePlatform {
       invariant(createHash('sha256').update(bytes).digest('hex') === recording.sha256, 'HASH_MISMATCH', 'Recording hash does not match declared sha256', 400)
       // WAV is the one format the server can verify completely before storing it.
       if (recording.contentType === SPEECH_WAV_MIME_TYPE) parseSpeechWav(bytes)
-      this.recordings.putBytes(actor.tenantId, recording.id, bytes)
+      await this.recordings.putBytes(actor.tenantId, recording.id, bytes)
       recording.state = 'uploaded'; recording.progress = 20; recording.uploadedAt = this.clock.now().toISOString()
-      this.recordings.save(recording)
+      await this.recordings.save(recording)
       // Retention counts from the first stored content and never restarts.
       if (!meetingRecord.contentStartedAt) {
         meetingRecord.contentStartedAt = recording.uploadedAt
-        this.meetings.save(meetingRecord)
+        await this.meetings.save(meetingRecord)
       }
       return view(recording)
-    }, recordingId)
+    }, recordingId))
   }
 
-  startProcessing(input, meetingId, recordingId, correlationId = randomUUID()) {
+  async startProcessing(input, meetingId, recordingId, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'recording.process', meetingId, () => {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
-      const recording = this.#recording(actor, meetingId, recordingId, true)
+    return (await this.#audited(actor, correlationId, 'recording.process', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
+      const recording = (await this.#recording(actor, meetingId, recordingId, true))
       const decision = this.#recordingPolicyDecision(actor, meetingRecord, recording)
       if (!decision.allowed) {
-        this.#quarantineRecording(meetingRecord, recording.id, decision.code)
+        await this.#quarantineRecording(meetingRecord, recording.id, decision.code)
         this.policy.require(decision)
       }
       if (['queued', 'processing', 'completed'].includes(recording.state)) return view(recording)
       invariant(recording.state === 'uploaded', 'RECORDING_NOT_UPLOADED', 'Recording must be uploaded before processing', 409)
       recording.state = 'queued'; recording.progress = 35; recording.processingAttempts = 1
-      this.recordings.save(recording)
-      this.schedule(() => this.#process(actor.tenantId, recording.id, correlationId))
+      await this.recordings.save(recording)
+      this.schedule(async () => (await this.#process(actor.tenantId, recording.id, correlationId)))
       return view(recording)
-    }, recordingId)
+    }, recordingId))
   }
 
   // Re-queues a failed job for its organizer, a bounded number of times. Policy
   // is evaluated exactly as for a first attempt: if consent, classification,
   // or retention changed since the upload, the recording is quarantined
   // instead of being processed again.
-  retryProcessing(input, meetingId, recordingId, correlationId = randomUUID()) {
+  async retryProcessing(input, meetingId, recordingId, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'recording.process.retry', meetingId, () => {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
-      const recording = this.#recording(actor, meetingId, recordingId, true)
+    return (await this.#audited(actor, correlationId, 'recording.process.retry', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
+      const recording = (await this.#recording(actor, meetingId, recordingId, true))
       invariant(recording.state === 'failed' && recording.error === PROCESSOR_FAILED, 'RECORDING_NOT_RETRYABLE', 'Only a failed processing job can be retried', 409)
       invariant((recording.processingAttempts ?? 1) < MAX_PROCESSING_ATTEMPTS, 'RETRY_LIMIT_REACHED', 'This recording has reached its processing retry limit', 409)
       const decision = this.#recordingPolicyDecision(actor, meetingRecord, recording)
       if (!decision.allowed) {
-        this.#quarantineRecording(meetingRecord, recording.id, decision.code)
+        await this.#quarantineRecording(meetingRecord, recording.id, decision.code)
         this.policy.require(decision)
       }
-      invariant(!recording.contentClearedAt && this.recordings.getBytes(actor.tenantId, recording.id), 'RECORDING_CONTENT_UNAVAILABLE', 'Recording audio is no longer available', 409)
+      invariant(!recording.contentClearedAt && (await this.recordings.getBytes(actor.tenantId, recording.id)), 'RECORDING_CONTENT_UNAVAILABLE', 'Recording audio is no longer available', 409)
       recording.state = 'queued'; recording.progress = 35; recording.error = null
       recording.processingAttempts = (recording.processingAttempts ?? 1) + 1
-      this.recordings.save(recording)
-      this.schedule(() => this.#process(actor.tenantId, recording.id, correlationId))
+      await this.recordings.save(recording)
+      this.schedule(async () => (await this.#process(actor.tenantId, recording.id, correlationId)))
       return view(recording)
-    }, recordingId)
+    }, recordingId))
   }
 
   async #process(tenantId, recordingId, correlationId) {
-    let recording = this.recordings.get(tenantId, recordingId)
+    let recording = (await this.recordings.get(tenantId, recordingId))
     if (!recording) return
     const actor = principal({ tenantId: recording.tenantId, userId: recording.organizerId })
     if (recording.state !== 'queued') {
       if (['quarantined', 'deleted'].includes(recording.state)) {
-        this.#auditProcessingDenial(correlationId, actor, recording, recording.dispositionReason ?? PROCESSING_CANCELLED)
+        await this.#auditProcessingDenial(correlationId, actor, recording, recording.dispositionReason ?? PROCESSING_CANCELLED)
       }
       return
     }
-    let meetingRecord = this.#meeting(recording.tenantId, recording.meetingId)
+    let meetingRecord = (await this.#meeting(recording.tenantId, recording.meetingId))
     let decision = this.#recordingPolicyDecision(actor, meetingRecord, recording)
     if (!decision.allowed) {
-      this.#quarantineRecording(meetingRecord, recording.id, decision.code)
-      this.#auditProcessingDenial(correlationId, actor, recording, decision.code)
+      await this.#quarantineRecording(meetingRecord, recording.id, decision.code)
+      await this.#auditProcessingDenial(correlationId, actor, recording, decision.code)
       return
     }
 
     recording.state = 'processing'; recording.progress = 65
-    this.recordings.save(recording)
+    await this.recordings.save(recording)
     const rosterEvidence = this.#authorizedRosterEvidence(meetingRecord)
 
     let result
     try {
       const rawResult = await this.speechProcessor.process({
-        recording: structuredClone(recording), bytes: this.recordings.getBytes(actor.tenantId, recordingId), rosterEvidence,
+        recording: structuredClone(recording), bytes: (await this.recordings.getBytes(actor.tenantId, recordingId)), rosterEvidence,
         participantIds: [...meetingRecord.participantIds],
       })
       result = this.#normalizeProcessorResult(rawResult, recording, rosterEvidence, meetingRecord.participantIds)
     } catch {
-      recording = this.recordings.get(actor.tenantId, recordingId)
-      meetingRecord = recording ? this.#meeting(recording.tenantId, recording.meetingId) : meetingRecord
+      recording = (await this.recordings.get(actor.tenantId, recordingId))
+      meetingRecord = recording ? (await this.#meeting(recording.tenantId, recording.meetingId)) : meetingRecord
       if (recording?.state === 'quarantined') {
-        this.#auditProcessingDenial(correlationId, actor, recording, recording.dispositionReason ?? PROCESSING_CANCELLED)
+        await this.#auditProcessingDenial(correlationId, actor, recording, recording.dispositionReason ?? PROCESSING_CANCELLED)
         return
       }
       if (recording) {
         decision = this.#recordingPolicyDecision(actor, meetingRecord, recording)
         if (!decision.allowed) {
-          this.#quarantineRecording(meetingRecord, recording.id, decision.code)
-          this.#auditProcessingDenial(correlationId, actor, recording, decision.code)
+          await this.#quarantineRecording(meetingRecord, recording.id, decision.code)
+          await this.#auditProcessingDenial(correlationId, actor, recording, decision.code)
           return
         }
       }
-      this.#processorFailure(recordingId, correlationId, actor)
+      await this.#processorFailure(recordingId, correlationId, actor)
       return
     }
 
-    recording = this.recordings.get(actor.tenantId, recordingId)
+    recording = (await this.recordings.get(actor.tenantId, recordingId))
     if (!recording || recording.state !== 'processing') {
-      this.#auditProcessingDenial(correlationId, actor, recording, recording?.dispositionReason ?? PROCESSING_CANCELLED)
+      await this.#auditProcessingDenial(correlationId, actor, recording, recording?.dispositionReason ?? PROCESSING_CANCELLED)
       return
     }
-    meetingRecord = this.#meeting(recording.tenantId, recording.meetingId)
+    meetingRecord = (await this.#meeting(recording.tenantId, recording.meetingId))
     decision = this.#recordingPolicyDecision(actor, meetingRecord, recording)
     if (!decision.allowed) {
-      this.#quarantineRecording(meetingRecord, recording.id, decision.code)
-      this.#auditProcessingDenial(correlationId, actor, recording, decision.code)
+      await this.#quarantineRecording(meetingRecord, recording.id, decision.code)
+      await this.#auditProcessingDenial(correlationId, actor, recording, decision.code)
       return
     }
 
     try {
       recording.state = 'completed'; recording.progress = 100; recording.processor = result.processor; recording.error = null
       recording.withheldAssertions = result.withheldAssertions
-      const publish = (transaction = null) => {
+      const publish = async (transaction = null) => {
         const knowledge = transaction?.knowledge ?? this.knowledge
         const commitments = transaction?.commitments ?? this.commitments
         const recordings = transaction?.recordings ?? this.recordings
         if (transaction) {
-          knowledge.clearMeeting(recording.meetingId)
-          commitments.clearMeeting(recording.meetingId)
-          knowledge.addSegments(result.segments)
-          knowledge.addAssertions(result.assertions)
-          commitments.replaceMeeting(recording.meetingId, knowledge.forMeeting(recording.meetingId))
-          recordings.save(recording)
+          await knowledge.clearMeeting(recording.meetingId)
+          await commitments.clearMeeting(recording.meetingId)
+          await knowledge.addSegments(result.segments)
+          await knowledge.addAssertions(result.assertions)
+          await commitments.replaceMeeting(recording.meetingId, (await knowledge.forMeeting(recording.meetingId)))
+          await recordings.save(recording)
         } else {
-          knowledge.clearMeeting(recording.tenantId, recording.meetingId)
-          commitments.clearMeeting(recording.tenantId, recording.meetingId)
-          knowledge.addSegments(result.segments)
-          knowledge.addAssertions(result.assertions)
-          this.#syncCommitments(recording.tenantId, recording.meetingId)
-          recordings.save(recording)
+          await knowledge.clearMeeting(recording.tenantId, recording.meetingId)
+          await commitments.clearMeeting(recording.tenantId, recording.meetingId)
+          await knowledge.addSegments(result.segments)
+          await knowledge.addAssertions(result.assertions)
+          await this.#syncCommitments(recording.tenantId, recording.meetingId)
+          await recordings.save(recording)
         }
-        this.#emitKnowledgeChange(meetingRecord, `recording:${recording.id}:completed`, { commitmentsChanged: true, transaction, knowledge, commitments })
-        this.#emitOutbox({
+        await this.#emitKnowledgeChange(meetingRecord, `recording:${recording.id}:completed`, { commitmentsChanged: true, transaction, knowledge, commitments })
+        await this.#emitOutbox({
           tenantId: recording.tenantId,
           type: 'recording.completed', aggregateType: 'recording', aggregateId: recording.id,
           revision: 'completed', payload: Object.freeze({ state: 'completed' }),
         }, transaction)
       }
-      if (this.#tenantTransaction) this.#tenantTransaction(recording.tenantId, publish)
-      else publish()
-      this.#audit({ correlationId, principal: actor, action: 'recording.process.complete', meetingId: recording.meetingId, recordingId, outcome: 'allowed' })
+      if (this.#tenantTransaction) await this.#tenantTransaction(recording.tenantId, publish)
+      else await publish()
+      await this.#audit({ correlationId, principal: actor, action: 'recording.process.complete', meetingId: recording.meetingId, recordingId, outcome: 'allowed' })
     } catch {
-      this.#processorFailure(recordingId, correlationId, actor)
+      await this.#processorFailure(recordingId, correlationId, actor)
     }
   }
 
-  getRecording(input, meetingId, recordingId, correlationId = randomUUID()) {
+  async getRecording(input, meetingId, recordingId, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'recording.status', meetingId, () => {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+    return (await this.#audited(actor, correlationId, 'recording.status', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       this.policy.require(this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() }))
-      const recording = this.#recording(actor, meetingId, recordingId)
+      const recording = (await this.#recording(actor, meetingId, recordingId))
       const output = { recording: view(recording) }
-      if (recording.state === 'completed') Object.assign(output, this.knowledge.forMeeting(actor.tenantId, meetingId))
+      if (recording.state === 'completed') Object.assign(output, (await this.knowledge.forMeeting(actor.tenantId, meetingId)))
       return output
-    }, recordingId)
+    }, recordingId))
   }
 
-  deleteMeetingContent(input, meetingId, correlationId = randomUUID()) {
+  async deleteMeetingContent(input, meetingId, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'recording.delete', meetingId, () => {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+    return (await this.#audited(actor, correlationId, 'recording.delete', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       invariant(meetingRecord.organizerId === actor.userId, 'DELETE_FORBIDDEN', 'Only organizer may delete development content', 403)
       invariant(meetingRecord.retentionState !== 'held', 'LEGAL_HOLD', 'Legal hold prevents deletion', 409)
-      this.#disposeMeetingContent(meetingRecord)
+      await this.#disposeMeetingContent(meetingRecord)
       return { state: 'deleted' }
-    })
+    }))
   }
 
   // Deletes one meeting's content in every store it reaches: audio, transcript,
   // knowledge, and derived commitments, then emits the content-free deletion
   // event. Manual deletion and retention expiry share this one path.
-  #disposeMeetingContent(meetingRecord) {
+  async #disposeMeetingContent(meetingRecord) {
     const tenantId = meetingRecord.tenantId
     const meetingId = meetingRecord.id
-    const dispose = (transaction = null) => {
+    const dispose = async (transaction = null) => {
         const meetings = transaction?.meetings ?? this.meetings
         const recordings = transaction?.recordings ?? this.recordings
         const knowledge = transaction?.knowledge ?? this.knowledge
         const commitments = transaction?.commitments ?? this.commitments
         meetingRecord.retentionState = 'deleted'
-        meetings.save(meetingRecord)
-        const records = transaction ? recordings.listForMeeting(meetingId) : recordings.listForMeeting(tenantId, meetingId)
+        await meetings.save(meetingRecord)
+        const records = transaction ? (await recordings.listForMeeting(meetingId)) : (await recordings.listForMeeting(tenantId, meetingId))
         for (const recording of records) {
-          if (transaction) recordings.clearContent(recording.id)
-          else recordings.clearContent(tenantId, recording.id)
-          recording.state = 'deleted'; recording.progress = 100; recordings.save(recording)
+          if (transaction) await recordings.clearContent(recording.id)
+          else await recordings.clearContent(tenantId, recording.id)
+          recording.state = 'deleted'; recording.progress = 100; await recordings.save(recording)
         }
         if (transaction) {
-          knowledge.clearMeeting(meetingId)
-          commitments.clearMeeting(meetingId)
+          await knowledge.clearMeeting(meetingId)
+          await commitments.clearMeeting(meetingId)
         } else {
-          knowledge.clearMeeting(tenantId, meetingId)
-          commitments.clearMeeting(tenantId, meetingId)
+          await knowledge.clearMeeting(tenantId, meetingId)
+          await commitments.clearMeeting(tenantId, meetingId)
         }
         // Deletion is the sole event after disposition. It contains no content
         // counts, recording IDs, source IDs, or classification, so consumers
         // cannot infer deleted/never-record information from the outbox.
-        this.#emitOutbox({
+        await this.#emitOutbox({
           tenantId,
           type: 'meeting.content.deleted', aggregateType: 'meeting', aggregateId: meetingId,
           revision: 'deleted', payload: Object.freeze({ state: 'deleted' }),
         }, transaction)
       }
-      if (this.#tenantTransaction) this.#tenantTransaction(tenantId, dispose)
-      else dispose()
+      if (this.#tenantTransaction) await this.#tenantTransaction(tenantId, dispose)
+      else await dispose()
   }
 
   // Run once at startup with durable storage. A job that was queued or running
   // when the server stopped can never finish (its in-process task is gone), so
   // it is marked failed through the normal failure path, which leaves it
   // retryable by its organizer instead of stuck in "processing" forever.
-  recoverInterruptedProcessing(tenantId, correlationId = randomUUID()) {
+  async recoverInterruptedProcessing(tenantId, correlationId = randomUUID()) {
     const actor = principal({ tenantId, userId: RECOVERY_SERVICE_ID })
     let recovered = 0
-    for (const meetingRecord of this.meetings.list(tenantId)) {
-      for (const recording of this.recordings?.listForMeeting(tenantId, meetingRecord.id) ?? []) {
+    for (const meetingRecord of (await this.meetings.list(tenantId))) {
+      for (const recording of (await this.recordings?.listForMeeting(tenantId, meetingRecord.id)) ?? []) {
         if (!['queued', 'processing'].includes(recording.state)) continue
-        this.#processorFailure(recording.id, correlationId, actor)
+        await this.#processorFailure(recording.id, correlationId, actor)
         recovered += 1
       }
     }
@@ -1253,42 +1262,42 @@ export class MeetingIntelligencePlatform {
   // Retention sweep for one tenant, run by the scheduler (never by a request).
   // Expired content is already unreadable through policy; this makes the
   // deletion real. Legal hold prevents it, and re-running is a no-op.
-  enforceRetention(tenantId, correlationId = randomUUID()) {
+  async enforceRetention(tenantId, correlationId = randomUUID()) {
     const actor = principal({ tenantId, userId: RETENTION_SERVICE_ID })
     const now = this.clock.now()
     const summary = { expired: 0, held: 0 }
-    for (const meetingRecord of this.meetings.list(tenantId)) {
+    for (const meetingRecord of (await this.meetings.list(tenantId))) {
       if (meetingRecord.retentionState === 'deleted' || !this.policy.retentionExpired({ meeting: meetingRecord, now })) continue
       if (meetingRecord.retentionState === 'held') { summary.held += 1; continue }
-      this.#audited(actor, correlationId, 'retention.expire', meetingRecord.id, () => this.#disposeMeetingContent(meetingRecord))
+      await this.#audited(actor, correlationId, 'retention.expire', meetingRecord.id, async () => (await this.#disposeMeetingContent(meetingRecord)))
       summary.expired += 1
     }
     return Object.freeze(summary)
   }
 
-  appendTranscript(input, meetingId, authorization, items, correlationId = randomUUID()) {
+  async appendTranscript(input, meetingId, authorization, items, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'transcript.append', meetingId, () => {
-      const append = (transaction = null) => {
+    return (await this.#audited(actor, correlationId, 'transcript.append', meetingId, async () => {
+      const append = async (transaction = null) => {
         const meetings = transaction?.meetings ?? this.meetings
         const knowledge = transaction?.knowledge ?? this.knowledge
         const commitments = transaction?.commitments ?? this.commitments
-        const meetingRecord = meetings.get(transaction ? meetingId : actor.tenantId, transaction ? undefined : meetingId)
+        const meetingRecord = (await meetings.get(transaction ? meetingId : actor.tenantId, transaction ? undefined : meetingId))
           ?? (() => { throw new DomainError('MEETING_NOT_FOUND', 'Meeting not found', 404) })()
         const staleAuthorization = meetingRecord.recording?.leaseId && !this.#leaseMatchesCurrentPolicy(meetingRecord, meetingRecord.recording)
         if (staleAuthorization) {
           meetingRecord.recording.status = 'revoked'
           meetingRecord.recording.revokedAt = this.clock.now().toISOString()
           meetingRecord.recording.revocationReason = this.#safePolicyReason('RECORDING_POLICY_CHANGED')
-          if (transaction) meetings.save(meetingRecord)
-          else this.meetings.save(meetingRecord)
+          if (transaction) await meetings.save(meetingRecord)
+          else await this.meetings.save(meetingRecord)
         }
         this.#capturePolicy(actor, meetingRecord)
         if (staleAuthorization) throw new DomainError('RECORDING_POLICY_CHANGED', 'Recording authorization no longer matches current policy', 403)
         invariant(authorization?.authorizationId === meetingRecord.recording.authorizationId, 'INVALID_RECORDING_AUTHORIZATION', 'Recording authorization does not match', 403)
         invariant(new Date(authorization.authorizationExpiresAt) > this.clock.now(), 'RECORDING_AUTHORIZATION_EXPIRED', 'Recording authorization expired', 403)
         const rows = items.map((item) => transcriptSegment({ ...item, meetingId, tenantId: actor.tenantId }))
-        const snapshot = transaction ? knowledge.forMeeting(meetingId) : knowledge.forMeeting(actor.tenantId, meetingId)
+        const snapshot = transaction ? (await knowledge.forMeeting(meetingId)) : (await knowledge.forMeeting(actor.tenantId, meetingId))
         const existing = new Map(snapshot.segments.map((row) => [row.id, row]))
         const requested = new Map()
         for (const row of rows) {
@@ -1300,23 +1309,23 @@ export class MeetingIntelligencePlatform {
         }
         const inserted = [...requested.values()].filter((row) => !existing.has(row.id))
         if (inserted.length === 0) return rows
-        knowledge.addSegments(inserted)
+        await knowledge.addSegments(inserted)
         const revision = `transcript:${createHash('sha256').update(JSON.stringify(canonical(inserted.map((row) => row.id)))).digest('hex')}`
-        this.#emitKnowledgeChange(meetingRecord, revision, { transaction, knowledge, commitments })
+        await this.#emitKnowledgeChange(meetingRecord, revision, { transaction, knowledge, commitments })
         return rows
       }
-      return this.#tenantTransaction ? this.#tenantTransaction(actor.tenantId, append) : append()
-    })
+      return this.#tenantTransaction ? (await this.#tenantTransaction(actor.tenantId, append)) : (await append())
+    }))
   }
 
-  addAssertions(input, meetingId, items, correlationId = randomUUID()) {
+  async addAssertions(input, meetingId, items, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'knowledge.assertions.add', meetingId, () => {
-      const add = (transaction = null) => {
+    return (await this.#audited(actor, correlationId, 'knowledge.assertions.add', meetingId, async () => {
+      const add = async (transaction = null) => {
       const meetings = transaction?.meetings ?? this.meetings
       const knowledge = transaction?.knowledge ?? this.knowledge
       const commitments = transaction?.commitments ?? this.commitments
-      const meetingRecord = meetings.get(transaction ? meetingId : actor.tenantId, transaction ? undefined : meetingId)
+      const meetingRecord = (await meetings.get(transaction ? meetingId : actor.tenantId, transaction ? undefined : meetingId))
         ?? (() => { throw new DomainError('MEETING_NOT_FOUND', 'Meeting not found', 404) })()
       this.policy.require(this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() }))
       // Participant writes may add cited notes/findings, but they cannot mint
@@ -1328,7 +1337,7 @@ export class MeetingIntelligencePlatform {
       for (const item of collection) envelopes.push(validatedManualAssertionEnvelope(item))
       invariant(!envelopes.some((item) => item.kind === 'action'), 'UNTRUSTED_ACTION_ASSERTION', 'Action commitments require canonical processor output', 403)
       requireCloneableManualAssertionCollection(items)
-      const snapshot = transaction ? knowledge.forMeeting(meetingId) : knowledge.forMeeting(actor.tenantId, meetingId)
+      const snapshot = transaction ? (await knowledge.forMeeting(meetingId)) : (await knowledge.forMeeting(actor.tenantId, meetingId))
       const ids = new Set(snapshot.segments.map((item) => item.id))
       const rows = []
       for (const item of envelopes) rows.push(knowledgeAssertion({ ...item, meetingId, tenantId: actor.tenantId }))
@@ -1345,37 +1354,37 @@ export class MeetingIntelligencePlatform {
       }
       const inserted = [...requested.values()].filter((row) => !existing.has(row.id))
       if (inserted.length > 0) {
-        knowledge.addAssertions(inserted)
-        this.#syncCommitments(actor.tenantId, meetingId, { knowledge, commitments })
+        await knowledge.addAssertions(inserted)
+        await this.#syncCommitments(actor.tenantId, meetingId, { knowledge, commitments })
         const revision = `assertions:${createHash('sha256').update(JSON.stringify(canonical(inserted.map((row) => row.id)))).digest('hex')}`
-        this.#emitKnowledgeChange(meetingRecord, revision, { commitmentsChanged: true, transaction, knowledge, commitments })
+        await this.#emitKnowledgeChange(meetingRecord, revision, { commitmentsChanged: true, transaction, knowledge, commitments })
       }
       return rows
       }
-      return this.#tenantTransaction ? this.#tenantTransaction(actor.tenantId, add) : add()
-    })
+      return this.#tenantTransaction ? (await this.#tenantTransaction(actor.tenantId, add)) : (await add())
+    }))
   }
 
-  getMeetingKnowledge(input, meetingId, correlationId = randomUUID()) {
+  async getMeetingKnowledge(input, meetingId, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'knowledge.read', meetingId, () => {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+    return (await this.#audited(actor, correlationId, 'knowledge.read', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       this.policy.require(this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() }))
-      return { meeting: meetingRecord, ...this.knowledge.forMeeting(actor.tenantId, meetingId) }
-    })
+      return { meeting: meetingRecord, ...(await this.knowledge.forMeeting(actor.tenantId, meetingId)) }
+    }))
   }
 
   // Produces a downloadable record of one meeting's authorized knowledge.
   // The audit event carries identifiers only; the document carries the same
   // correlation ID so any copy can be traced back to this decision.
-  exportMeetingRecord(input, meetingId, correlationId = randomUUID()) {
+  async exportMeetingRecord(input, meetingId, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'meeting.export', meetingId, () => {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+    return (await this.#audited(actor, correlationId, 'meeting.export', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       this.policy.require(this.policy.meetingExport({ principal: actor, meeting: meetingRecord, now: this.clock.now() }))
-      const { segments, assertions } = this.knowledge.forMeeting(actor.tenantId, meetingId)
+      const { segments, assertions } = (await this.knowledge.forMeeting(actor.tenantId, meetingId))
       invariant(segments.length > 0 || assertions.length > 0, 'NO_MEETING_RECORD', 'This meeting has no processed record to export yet', 409)
-      const completed = (this.recordings?.listForMeeting(actor.tenantId, meetingId) ?? []).filter((item) => item.state === 'completed')
+      const completed = ((await this.recordings?.listForMeeting(actor.tenantId, meetingId)) ?? []).filter((item) => item.state === 'completed')
       return Object.freeze({
         filename: exportFilename(meetingId),
         contentType: 'text/markdown; charset=utf-8',
@@ -1385,44 +1394,44 @@ export class MeetingIntelligencePlatform {
           exportedBy: actor.userId, exportedAt: this.clock.now().toISOString(), correlationId,
         }),
       })
-    })
+    }))
   }
 
-  getMeetingPrivacyAccess(input, meetingId, correlationId = randomUUID()) {
+  async getMeetingPrivacyAccess(input, meetingId, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'privacy-access.read', meetingId, () => {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+    return (await this.#audited(actor, correlationId, 'privacy-access.read', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       const access = this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() })
       if (!access.allowed) throw this.#opaquePrivacyAccessDenied(access.code)
       return Object.freeze({
         access: Object.freeze({ posture: access.posture, authorized: true }),
         classification: this.#classificationSummary(meetingRecord),
         retention: this.#retentionSummary(meetingRecord),
-        auditTimeline: this.#redactedAuditTimeline(actor.tenantId, meetingId),
+        auditTimeline: (await this.#redactedAuditTimeline(actor.tenantId, meetingId)),
       })
-    })
+    }))
   }
 
-  searchKnowledge(input, query, correlationId = randomUUID()) {
-    return this.#matches(principal(input), query, correlationId, 'knowledge.search')
+  async searchKnowledge(input, query, correlationId = randomUUID()) {
+    return (await this.#matches(principal(input), query, correlationId, 'knowledge.search'))
   }
 
-  retrieveForAi(input, query, correlationId = randomUUID()) {
-    return this.#matches(principal(input), query, correlationId, 'ai.retrieve')
+  async retrieveForAi(input, query, correlationId = randomUUID()) {
+    return (await this.#matches(principal(input), query, correlationId, 'ai.retrieve'))
   }
 
-  queryCommitments(input, query = '', correlationId = randomUUID()) {
+  async queryCommitments(input, query = '', correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'commitment.query', null, () => {
+    return (await this.#audited(actor, correlationId, 'commitment.query', null, async () => {
       const output = []
-      for (const item of this.commitments.query(actor.tenantId, query)) {
+      for (const item of (await this.commitments.query(actor.tenantId, query))) {
         // The registry is a derived index, so treat it as an untrusted read
         // boundary too.  Never turn a malformed or oversized source list into
         // an API response, audit-adjacent record, or agent context payload.
         if (!isBoundedKnowledgeCitationList(item?.citations)) continue
-        const meetingRecord = this.#meeting(actor.tenantId, item.meetingId)
+        const meetingRecord = (await this.#meeting(actor.tenantId, item.meetingId))
         const decision = this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() })
-        this.#audit({ correlationId, principal: actor, action: 'commitment.query', meetingId: item.meetingId, outcome: decision.allowed ? 'allowed' : 'denied', reason: decision.allowed ? null : decision.code })
+        await this.#audit({ correlationId, principal: actor, action: 'commitment.query', meetingId: item.meetingId, outcome: decision.allowed ? 'allowed' : 'denied', reason: decision.allowed ? null : decision.code })
         if (!decision.allowed) continue
         // Return source linkage, not processor provenance or a meeting bundle.
         output.push(Object.freeze({
@@ -1436,12 +1445,12 @@ export class MeetingIntelligencePlatform {
         }))
       }
       return Object.freeze({ commitments: Object.freeze(output) })
-    })
+    }))
   }
 
-  getManagementBriefing(input, correlationId = randomUUID()) {
+  async getManagementBriefing(input, correlationId = randomUUID()) {
     const actor = principal(input)
-    return this.#audited(actor, correlationId, 'management-briefing.read', null, () => {
+    return (await this.#audited(actor, correlationId, 'management-briefing.read', null, async () => {
       const decisions = []
       const risks = []
       const blockers = []
@@ -1451,11 +1460,11 @@ export class MeetingIntelligencePlatform {
       // existing meeting policy before touching a knowledge row. Do not emit
       // a per-meeting audit event here: that would itself disclose hidden
       // source existence to an otherwise authorized audit reader.
-      for (const meetingRecord of this.meetings.list(actor.tenantId)) {
+      for (const meetingRecord of (await this.meetings.list(actor.tenantId))) {
         const access = this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() })
         if (!access.allowed) continue
 
-        const knowledge = this.knowledge.forMeeting(actor.tenantId, meetingRecord.id)
+        const knowledge = (await this.knowledge.forMeeting(actor.tenantId, meetingRecord.id))
         const segmentIds = new Set((knowledge.segments ?? [])
           .filter((segment) => typeof segment?.id === 'string')
           .map((segment) => segment.id))
@@ -1473,7 +1482,7 @@ export class MeetingIntelligencePlatform {
         // The commitment registry is a derived, canonical-only action index.
         // Recheck every citation against the canonical transcript source to
         // keep stale or malformed derived rows out of future agent context.
-        for (const commitment of this.commitments.query(actor.tenantId)) {
+        for (const commitment of (await this.commitments.query(actor.tenantId))) {
           if (commitment.meetingId !== meetingRecord.id || !ACTIVE_COMMITMENT_STATUSES.has(commitment.status)) continue
           const item = this.#briefingCommitment(commitment, meetingRecord.id, segmentIds)
           if (!item) continue
@@ -1496,7 +1505,7 @@ export class MeetingIntelligencePlatform {
           actions: Object.freeze(actions.slice(0, BRIEFING_ITEM_LIMIT)),
         }),
       })
-    })
+    }))
   }
 
   #briefingAssertion(assertion, meetingId, segmentIds) {
@@ -1536,13 +1545,13 @@ export class MeetingIntelligencePlatform {
     return /\b(blocker|blocked|blocking)\b/i.test(text)
   }
 
-  #matches(actor, query, correlationId, action) {
+  async #matches(actor, query, correlationId, action) {
     const output = []
-    for (const meetingId of this.knowledge.meetingIdsMatching(actor.tenantId, query)) {
-      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+    for (const meetingId of (await this.knowledge.meetingIdsMatching(actor.tenantId, query))) {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       const decision = this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() })
-      this.#audit({ correlationId, principal: actor, action, meetingId, outcome: decision.allowed ? 'allowed' : 'denied', reason: decision.allowed ? null : decision.code })
-      if (decision.allowed) output.push({ meeting: meetingRecord, ...this.knowledge.forMeeting(actor.tenantId, meetingId) })
+      await this.#audit({ correlationId, principal: actor, action, meetingId, outcome: decision.allowed ? 'allowed' : 'denied', reason: decision.allowed ? null : decision.code })
+      if (decision.allowed) output.push({ meeting: meetingRecord, ...(await this.knowledge.forMeeting(actor.tenantId, meetingId)) })
     }
     return output
   }
