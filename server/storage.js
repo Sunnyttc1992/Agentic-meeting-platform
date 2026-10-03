@@ -1,0 +1,400 @@
+import { invariant } from './errors.js'
+import {
+  InMemoryAppendOnlyAudit,
+  InMemoryCommitmentRegistry,
+  InMemoryKnowledgeRepository,
+  InMemoryMeetingRepository,
+  InMemoryRecordingRepository,
+} from './adapters/in-memory.js'
+
+// This module is the persistence anti-corruption layer.  Domain services use
+// canonical meeting records and tenant-scoped repositories; they never depend
+// on a database client, an object-store SDK, or a queue implementation.
+export const MEETING_LEDGER_DATA_MODEL_VERSION = 'meeting-ledger-v1'
+
+export const CANONICAL_DATA_SETS = Object.freeze([
+  'meetings',
+  'recording-manifests',
+  'transcript-segments',
+  'knowledge-assertions',
+  'commitment-read-model',
+  'audit-events',
+  'outbox-events',
+])
+
+// Storage bundles and tenant facades are object capabilities, not merely
+// interfaces.  A structural look-alike can hide a global repository behind a
+// getter or a callback and is therefore not a safe persistence boundary.  The
+// two brands stay module-private: production composition roots use the two
+// factories below, while domain code can only consume the resulting closed
+// capabilities.
+const STORAGE_BUNDLES = new WeakSet()
+const TENANT_FACADES = new WeakSet()
+const FACADE_REPOSITORIES = Object.freeze([
+  'meetings', 'knowledge', 'recordings', 'audit', 'commitments', 'outbox',
+])
+
+const READER_METHODS = Object.freeze({
+  meetings: Object.freeze(['get', 'list']),
+  knowledge: Object.freeze(['forMeeting', 'meetingIdsMatching']),
+  recordings: Object.freeze(['get', 'listForMeeting']),
+  audit: Object.freeze(['forMeeting', 'chain']),
+  commitments: Object.freeze(['query']),
+  outbox: Object.freeze(['list']),
+})
+
+const WRITER_METHODS = Object.freeze({
+  meetings: Object.freeze(['save']),
+  knowledge: Object.freeze(['addSegments', 'addAssertions', 'clearMeeting']),
+  recordings: Object.freeze(['save', 'putBytes', 'getBytes', 'clearContent']),
+  audit: Object.freeze(['append']),
+  commitments: Object.freeze(['replaceMeeting', 'clearMeeting']),
+  outbox: Object.freeze(['enqueue']),
+})
+
+export function tenantScope(input) {
+  invariant(input && typeof input.tenantId === 'string' && input.tenantId.trim().length > 0,
+    'INVALID_TENANT_SCOPE', 'A non-empty tenant scope is required', 400)
+  return Object.freeze({ tenantId: input.tenantId })
+}
+
+export function assertTenantRecord(scope, record, label = 'record') {
+  const normalized = tenantScope(scope)
+  invariant(record && record.tenantId === normalized.tenantId,
+    'TENANT_SCOPE_VIOLATION', `${label} must remain inside the active tenant scope`, 403)
+  return record
+}
+
+/**
+ * Production adapters implement this structural contract.  `transaction`
+ * must make the canonical write plus its outbox inserts atomic.  `objectStore`
+ * must accept only an opaque key reference and encrypted metadata -- never
+ * bytes embedded in a database event or an application-controlled secret.
+ */
+function assertCapabilityFunction(value, label) {
+  invariant(typeof value === 'function', 'INVALID_STORAGE_ADAPTER', `${label} must be a function capability`)
+  invariant(Object.getPrototypeOf(value) === Function.prototype,
+    'INVALID_STORAGE_ADAPTER', `${label} has an unexpected function prototype`)
+  invariant(!Object.hasOwn(value, 'prototype'), 'INVALID_STORAGE_ADAPTER', `${label} must not expose a constructable capability`)
+  invariant(Object.getOwnPropertySymbols(value).length === 0, 'INVALID_STORAGE_ADAPTER', `${label} must not expose symbol capabilities`)
+  const names = Object.getOwnPropertyNames(value)
+  invariant(names.every((name) => name === 'length' || name === 'name'),
+    'INVALID_STORAGE_ADAPTER', `${label} exposes callback properties`)
+}
+
+function assertTenantFacade(facade, tenantId, label, writable) {
+  invariant(facade && typeof facade === 'object' && Object.getPrototypeOf(facade) === null,
+    'INVALID_STORAGE_ADAPTER', `${label} must return a null-prototype tenant facade`)
+  invariant(Object.isFrozen(facade), 'INVALID_STORAGE_ADAPTER', `${label} tenant facade must be frozen`)
+  invariant(TENANT_FACADES.has(facade), 'INVALID_STORAGE_ADAPTER', `${label} must return a branded tenant facade`)
+  invariant(facade.tenantId === tenantId, 'INVALID_STORAGE_ADAPTER', `${label} tenant facade has an invalid tenant binding`)
+  invariant(!Object.hasOwn(facade, 'storage') && !Object.hasOwn(facade, 'scope') && !Object.hasOwn(facade, 'transaction'),
+    'INVALID_STORAGE_ADAPTER', `${label} tenant facade exposes a storage escape`)
+  invariant(Object.getOwnPropertySymbols(facade).length === 0,
+    'INVALID_STORAGE_ADAPTER', `${label} tenant facade must not expose symbol capabilities`)
+  for (const name of FACADE_REPOSITORIES) {
+    const repository = facade[name]
+    invariant(repository && typeof repository === 'object' && Object.getPrototypeOf(repository) === null && Object.isFrozen(repository),
+      'INVALID_STORAGE_ADAPTER', `${label} tenant facade is missing a sealed ${name} capability`)
+    invariant(Object.getOwnPropertySymbols(repository).length === 0,
+      'INVALID_STORAGE_ADAPTER', `${label} ${name} capability must not expose symbol capabilities`)
+    const expected = [...READER_METHODS[name], ...(writable ? WRITER_METHODS[name] : [])]
+    invariant(Object.keys(repository).length === expected.length && expected.every((method) => Object.hasOwn(repository, method)),
+      'INVALID_STORAGE_ADAPTER', `${label} ${name} capability has an invalid surface`)
+    for (const method of expected) assertCapabilityFunction(repository[method], `${label}.${name}.${method}`)
+  }
+}
+
+function frozenNullObject(entries) {
+  const target = Object.create(null)
+  for (const [key, value] of Object.entries(entries)) {
+    Object.defineProperty(target, key, { value, enumerable: true, writable: false, configurable: false })
+  }
+  return Object.freeze(target)
+}
+
+/**
+ * Creates the only tenant capability shape accepted by the platform. The
+ * supplied methods may close over a database transaction or repositories,
+ * but that state is never an object property, symbol, prototype, or callback
+ * argument available to the domain transaction callback.
+ */
+export function createTenantStorageFacade(scope, capabilities, { writable = false } = {}) {
+  const normalized = tenantScope(scope)
+  invariant(capabilities && typeof capabilities === 'object', 'INVALID_STORAGE_ADAPTER', 'Tenant capabilities are required')
+  const entries = { tenantId: normalized.tenantId }
+  for (const repositoryName of FACADE_REPOSITORIES) {
+    const source = capabilities[repositoryName]
+    invariant(source && typeof source === 'object' && Object.getPrototypeOf(source) === Object.prototype,
+      'INVALID_STORAGE_ADAPTER', `${repositoryName} capabilities must be plain objects`)
+    invariant(Object.getOwnPropertySymbols(source).length === 0,
+      'INVALID_STORAGE_ADAPTER', `${repositoryName} capabilities must not expose symbols`)
+    const expected = [...READER_METHODS[repositoryName], ...(writable ? WRITER_METHODS[repositoryName] : [])]
+    const names = Object.getOwnPropertyNames(source)
+    invariant(names.length === expected.length && expected.every((name) => Object.hasOwn(source, name)),
+      'INVALID_STORAGE_ADAPTER', `${repositoryName} capabilities have an invalid surface`)
+    for (const method of expected) {
+      const descriptor = Object.getOwnPropertyDescriptor(source, method)
+      invariant(descriptor && Object.hasOwn(descriptor, 'value'), 'INVALID_STORAGE_ADAPTER', `${repositoryName}.${method} must be a data capability`)
+      assertCapabilityFunction(descriptor.value, `${repositoryName}.${method}`)
+    }
+    entries[repositoryName] = frozenNullObject(Object.fromEntries(expected.map((method) => [method, source[method]])))
+  }
+  const facade = frozenNullObject(entries)
+  TENANT_FACADES.add(facade)
+  assertTenantFacade(facade, normalized.tenantId, 'tenant capability', writable)
+  return facade
+}
+
+/**
+ * Registers a trusted storage composition root. The returned bundle exposes
+ * only tenant-bound read and transaction entrypoints; it deliberately does
+ * not expose raw repositories. Production adapters must create their
+ * facades with `createTenantStorageFacade` and register them here.
+ */
+export function createMeetingStorageBundle({ kind = 'durable', dataModelVersion = MEETING_LEDGER_DATA_MODEL_VERSION, scope, transaction }) {
+  invariant(typeof scope === 'function' && typeof transaction === 'function',
+    'INVALID_STORAGE_ADAPTER', 'Storage bundle requires scope and transaction functions')
+  invariant(dataModelVersion === MEETING_LEDGER_DATA_MODEL_VERSION,
+    'UNSUPPORTED_STORAGE_MODEL', 'Storage adapter data model version is not supported')
+  const bundle = frozenNullObject({
+    kind,
+    dataModelVersion,
+    scope: (requestedScope) => {
+      const normalized = tenantScope(requestedScope)
+      const facade = scope(normalized)
+      assertTenantFacade(facade, normalized.tenantId, 'scope', false)
+      return facade
+    },
+    transaction: (requestedScope, operation) => {
+      const normalized = tenantScope(requestedScope)
+      invariant(typeof operation === 'function', 'INVALID_STORAGE_TRANSACTION', 'Transaction operation is required')
+      return transaction(normalized, (facade) => {
+        assertTenantFacade(facade, normalized.tenantId, 'transaction', true)
+        return operation(facade)
+      })
+    },
+  })
+  STORAGE_BUNDLES.add(bundle)
+  return bundle
+}
+
+export function assertMeetingStorageContract(storage) {
+  invariant(storage && typeof storage === 'object' && Object.getPrototypeOf(storage) === null && Object.isFrozen(storage),
+    'INVALID_STORAGE_ADAPTER', 'Storage adapter must be a sealed capability bundle')
+  invariant(STORAGE_BUNDLES.has(storage), 'INVALID_STORAGE_ADAPTER', 'Storage adapter must be registered by a trusted composition root')
+  invariant(storage.dataModelVersion === MEETING_LEDGER_DATA_MODEL_VERSION,
+    'UNSUPPORTED_STORAGE_MODEL', 'Storage adapter data model version is not supported')
+  invariant(Object.getOwnPropertySymbols(storage).length === 0,
+    'INVALID_STORAGE_ADAPTER', 'Storage adapter must not expose symbol capabilities')
+  invariant(Object.keys(storage).length === 4 && ['kind', 'dataModelVersion', 'scope', 'transaction'].every((name) => Object.hasOwn(storage, name)),
+    'INVALID_STORAGE_ADAPTER', 'Storage adapter exposes an invalid public surface')
+  assertCapabilityFunction(storage.scope, 'storage.scope')
+  assertCapabilityFunction(storage.transaction, 'storage.transaction')
+  // Branding alone establishes the trusted composition root; exercise every
+  // registered bundle as well, so an otherwise-branded adapter cannot hand
+  // the platform a forged, re-used, or incorrectly bound facade later.
+  const nonce = Math.random().toString(36).slice(2)
+  const firstTenant = `__storage-contract-a-${nonce}`
+  const secondTenant = `__storage-contract-b-${nonce}`
+  const firstScope = storage.scope({ tenantId: firstTenant })
+  const secondScope = storage.scope({ tenantId: secondTenant })
+  assertTenantFacade(firstScope, firstTenant, 'scope', false)
+  assertTenantFacade(secondScope, secondTenant, 'scope', false)
+  invariant(firstScope !== secondScope, 'INVALID_STORAGE_ADAPTER', 'Storage scope must mint an isolated tenant capability')
+  const transactionFacade = storage.transaction({ tenantId: firstTenant }, (transaction) => transaction)
+  assertTenantFacade(transactionFacade, firstTenant, 'transaction', true)
+  invariant(transactionFacade !== firstScope, 'INVALID_STORAGE_ADAPTER', 'Transaction must mint an isolated tenant capability')
+  return storage
+}
+
+function assertTenantRecordList(scope, records, label) {
+  invariant(Array.isArray(records), 'TENANT_SCOPE_VIOLATION', `${label} must be an array`, 403)
+  for (const record of records) assertTenantRecord(scope, record, label)
+  return records
+}
+
+// A deliberately small outbox representation. It is not a queue and does not
+// deliver events; it lets the prototype exercise the exact idempotency and
+// tenant-binding rules a transactional database outbox will enforce later.
+export class InMemoryOutboxRepository {
+  #events = new Map()
+
+  enqueue(scope, event) {
+    const normalized = tenantScope(scope)
+    assertTenantRecord(normalized, event, 'outbox event')
+    invariant(typeof event.idempotencyKey === 'string' && event.idempotencyKey.trim().length > 0,
+      'INVALID_OUTBOX_EVENT', 'Outbox events require an idempotency key')
+    invariant(typeof event.type === 'string' && event.type.trim().length > 0,
+      'INVALID_OUTBOX_EVENT', 'Outbox events require a type')
+    const key = `${normalized.tenantId}:${event.idempotencyKey}`
+    const existing = this.#events.get(key)
+    if (existing) return structuredClone(existing)
+    const stored = Object.freeze(structuredClone({
+      id: event.id ?? `outbox:${event.idempotencyKey}`,
+      tenantId: normalized.tenantId,
+      type: event.type,
+      idempotencyKey: event.idempotencyKey,
+      aggregateType: event.aggregateType ?? 'meeting',
+      aggregateId: event.aggregateId ?? null,
+      payload: event.payload ?? {},
+      occurredAt: event.occurredAt ?? new Date().toISOString(),
+    }))
+    this.#events.set(key, stored)
+    return structuredClone(stored)
+  }
+
+  list(scope) {
+    const normalized = tenantScope(scope)
+    return [...this.#events.values()]
+      .filter((event) => event.tenantId === normalized.tenantId)
+      .map((event) => structuredClone(event))
+  }
+  snapshot() { return structuredClone(this.#events) }
+  restore(snapshot) { this.#events = structuredClone(snapshot) }
+}
+
+// Prototype-only composition root. This preserves existing in-memory behavior
+// while allowing an application to pass one durable adapter bundle into the
+// platform. `transaction` intentionally receives an explicit scope, making an
+// unscoped cross-tenant query impossible at the storage boundary.
+export function createInMemoryMeetingStorage({ shouldFailOutboxEnqueue = null } = {}) {
+  invariant(shouldFailOutboxEnqueue === null || typeof shouldFailOutboxEnqueue === 'function',
+    'INVALID_STORAGE_ADAPTER', 'Outbox failure injector must be a function when supplied')
+  // Repositories remain private to this composition root. In particular, a
+  // transaction callback never receives this object or any repository with a
+  // caller-supplied tenant argument. Its only authority is a new, tenant-bound
+  // facade minted for the requested scope.
+  const repositories = {
+    meetings: new InMemoryMeetingRepository(),
+    knowledge: new InMemoryKnowledgeRepository(),
+    recordings: new InMemoryRecordingRepository(),
+    audit: new InMemoryAppendOnlyAudit(),
+    commitments: new InMemoryCommitmentRegistry(),
+    outbox: new InMemoryOutboxRepository(),
+  }
+
+  function scopedFacade(scope, { writable = false } = {}) {
+    const normalized = tenantScope(scope)
+    const { tenantId } = normalized
+    const requireRecording = (recordingId) => {
+      const record = repositories.recordings.get(recordingId)
+      invariant(record && record.tenantId === tenantId, 'TENANT_SCOPE_VIOLATION', 'Recording must remain inside the active tenant scope', 403)
+      return record
+    }
+    const meetings = {
+      get: (meetingId) => repositories.meetings.get(tenantId, meetingId),
+      list: () => repositories.meetings.list(tenantId),
+    }
+    const knowledge = {
+      forMeeting: (meetingId) => repositories.knowledge.forMeeting(tenantId, meetingId),
+      meetingIdsMatching: (query) => repositories.knowledge.meetingIdsMatching(tenantId, query),
+    }
+    const recordings = {
+      get: (recordingId) => {
+        const record = repositories.recordings.get(recordingId)
+        return record?.tenantId === tenantId ? record : null
+      },
+      listForMeeting: (meetingId) => repositories.recordings.listForMeeting(tenantId, meetingId),
+    }
+    const audit = {
+      forMeeting: (meetingId) => repositories.audit.forMeeting(tenantId, meetingId),
+      chain: () => repositories.audit.chain(tenantId),
+    }
+    const commitments = {
+      query: (query = '') => repositories.commitments.query(tenantId, query),
+    }
+    const outbox = {
+      list: () => repositories.outbox.list(normalized),
+    }
+
+    if (writable) {
+      meetings.save = (record) => {
+        assertTenantRecord(normalized, record, 'meeting')
+        return repositories.meetings.save(record)
+      }
+      knowledge.addSegments = (records) => {
+        assertTenantRecordList(normalized, records, 'transcript segment')
+        return repositories.knowledge.addSegments(records)
+      }
+      knowledge.addAssertions = (records) => {
+        assertTenantRecordList(normalized, records, 'knowledge assertion')
+        return repositories.knowledge.addAssertions(records)
+      }
+      knowledge.clearMeeting = (meetingId) => repositories.knowledge.clearMeeting(tenantId, meetingId)
+      recordings.save = (record) => {
+        assertTenantRecord(normalized, record, 'recording')
+        const existing = repositories.recordings.get(record.id)
+        invariant(!existing || existing.tenantId === tenantId, 'TENANT_SCOPE_VIOLATION', 'Recording must remain inside the active tenant scope', 403)
+        return repositories.recordings.save(record)
+      }
+      recordings.putBytes = (recordingId, bytes) => {
+        requireRecording(recordingId)
+        return repositories.recordings.putBytes(recordingId, bytes)
+      }
+      recordings.getBytes = (recordingId) => {
+        requireRecording(recordingId)
+        return repositories.recordings.getBytes(recordingId)
+      }
+      recordings.clearContent = (recordingId) => {
+        requireRecording(recordingId)
+        return repositories.recordings.clearContent(recordingId)
+      }
+      audit.append = (event) => {
+        assertTenantRecord(normalized, event, 'audit event')
+        return repositories.audit.append(event)
+      }
+      commitments.replaceMeeting = (meetingId, knowledgeForMeeting) => {
+        const segments = knowledgeForMeeting?.segments ?? []
+        const assertions = knowledgeForMeeting?.assertions ?? []
+        assertTenantRecordList(normalized, segments, 'transcript segment')
+        assertTenantRecordList(normalized, assertions, 'knowledge assertion')
+        invariant(segments.every((item) => item.meetingId === meetingId) && assertions.every((item) => item.meetingId === meetingId),
+          'TENANT_SCOPE_VIOLATION', 'Commitments must remain inside the active meeting scope', 403)
+        return repositories.commitments.replaceMeeting(tenantId, meetingId, knowledgeForMeeting)
+      }
+      commitments.clearMeeting = (meetingId) => repositories.commitments.clearMeeting(tenantId, meetingId)
+      outbox.enqueue = (event) => {
+        assertTenantRecord(normalized, event, 'outbox event')
+        // The injector exists solely to exercise the prototype transaction
+        // boundary. It runs before the insert, so a thrown failure is covered
+        // by the composition root's rollback below.
+        if (shouldFailOutboxEnqueue?.(structuredClone(event))) {
+          throw new Error('Injected outbox enqueue failure')
+        }
+        return repositories.outbox.enqueue(normalized, event)
+      }
+    }
+
+    return createTenantStorageFacade(normalized, {
+      meetings,
+      knowledge,
+      recordings,
+      audit,
+      commitments,
+      outbox,
+    }, { writable })
+  }
+
+  return createMeetingStorageBundle({
+    kind: 'in-memory-prototype',
+    scope: (scope) => scopedFacade(scope),
+    transaction: (scope, operation) => {
+      const normalized = tenantScope(scope)
+      // Snapshot before minting the tenant-bound write facade. This is a
+      // synchronous prototype implementation of the all-or-nothing contract:
+      // if an outbox enqueue or derived commitment write fails, canonical rows
+      // and outbox rows are restored together. Production replaces this with
+      // one database transaction covering the same records.
+      const snapshots = Object.fromEntries(Object.entries(repositories).map(([name, repository]) => [name, repository.snapshot()]))
+      try {
+        const result = operation(scopedFacade(normalized, { writable: true }))
+        invariant(!(result && typeof result.then === 'function'), 'ASYNC_STORAGE_TRANSACTION_UNSUPPORTED', 'In-memory transactions must complete synchronously', 400)
+        return result
+      } catch (error) {
+        for (const [name, repository] of Object.entries(repositories)) repository.restore(snapshots[name])
+        throw error
+      }
+    },
+  })
+}

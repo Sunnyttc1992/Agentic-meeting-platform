@@ -1,0 +1,53 @@
+# Backend foundation
+
+This directory contains an authorization-first modular monolith for the first trusted meeting-intelligence slice. `MeetingIntelligencePlatform` is the external interface used by transports and tests. Policy decisions happen before protected records cross the retrieval seam; the AI retrieval method returns only authorized meeting bundles.
+
+The included repositories, audit store, and fixed clock are in-memory adapters for executable tests, not production storage. Production work still requires durable tenant-partitioned database and object-storage adapters, transactional/outbox guarantees, immutable WORM-capable audit storage, enterprise identity verification, organization-directory synchronization, encrypted media ingestion, key management, retention/deletion workers, policy administration, full-text/vector indexes that preserve authorization partitions, observability, rate limiting, and a model gateway that accepts only the authorized context returned here.
+
+The minimal HTTP adapter demonstrates authenticated-principal propagation through headers for local integration only. A production adapter must obtain the Principal from verified identity-provider tokens; it must never trust caller-supplied identity headers.
+
+## Running the real pipeline (record → transcribe → summary and action plan)
+
+```powershell
+# Optional: copy .env.example to .env, then set ANTHROPIC_API_KEY locally.
+# .env is ignored by Git and is loaded only into the local Node server.
+Copy-Item .env.example .env
+npm run build
+npm run preview                          # http://localhost:4173, this machine only
+```
+
+Leave `ANTHROPIC_API_KEY` blank to run in transcript-only mode. The `dev` and
+`preview` scripts use Node's `--env-file-if-exists=.env`, so a missing `.env`
+is safe: startup still works and pipeline readiness reports
+`anthropic.credentialsConfigured: false`. Do not add `VITE_` variables or
+browser code that reads this key; this file is server configuration only.
+
+Open **Test secure recording**, grant consent for both participants, record, stop, then choose **Process locally**. The first run downloads the Whisper model (about 150 MB) into `.cache/models`. After that, a one-minute meeting takes roughly ten seconds on a typical CPU. The result shows the executive summary, the action plan (with owner and due date only where they were stated), decisions, risks, open questions, and the transcript. Every item links to the transcript moments it cites. Actions also appear in **Commitments**.
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` (or an `ant auth login` profile) | unset | Enables the Claude summary and action plan |
+| `MEETING_SUMMARY_MODEL` | `claude-sonnet-5-5` | Claude model used for the summary |
+| `WHISPER_MODEL` | `onnx-community/whisper-base` | Local Whisper model; `onnx-community/whisper-small` is more accurate but slower |
+| `WHISPER_LANGUAGE` | `en` | Spoken language |
+| `MEETING_PROCESSOR` | `local` | Set to `fake` for the deterministic development processor |
+
+Recordings up to about 80 minutes are accepted. Data flow, controls, and the remaining blockers to wider delivery are documented in [docs/security/local-meeting-pipeline.md](../docs/security/local-meeting-pipeline.md).
+
+### Check pipeline readiness without processing a meeting
+
+With the local preview running, use the browser's existing local development identity or call the same-origin `GET /pipeline/readiness` route. It reports only whether the Whisper runtime is installed, a complete local model cache is present, Anthropic credentials are configured, and Teams remains disconnected. It does not download Whisper, send audio, contact Anthropic, or reveal paths, model names, IDs, or credential values. A missing `.env` or empty key honestly reports `anthropic.credentialsConfigured: false`; process a short non-sensitive test recording from `http://localhost:4173` to exercise transcript-only mode first.
+
+## Local audio ingestion
+
+The development pipeline issues opaque, short-lived, single-use recording leases; accepts strict recording metadata; verifies raw bytes against the declared media type, length, and lower-case SHA-256; and stores bytes only in the in-memory recording adapter. Processing crosses the `SpeechProcessor` seam. The development platform defaults to the real local pipeline above; `FakeSpeechProcessor` (`MEETING_PROCESSOR=fake`, and in tests) is intentionally deterministic and clearly labeled: it demonstrates timestamped segments, diarization labels, nullable verified identity, confidence, provenance, and citation integrity, but is not real STT or diarization.
+
+Each lease and recording bind the current consent-policy version, meeting classification, authorization principals, required roster, retention state, and capture-policy configuration through a SHA-256 policy fingerprint. A change to any bound input revokes the lease; refreshing consent under a new policy version never makes an older lease usable. Queue admission and publication independently re-evaluate current capture policy, so a denial before or during processing moves the recording to protected quarantine and clears all derived knowledge before it can be read, searched, or retrieved for AI.
+
+The speech processor is an untrusted boundary. Processor exceptions are collapsed to the allowlisted `PROCESSOR_FAILED` status and audit reason; exception codes, messages, names, and stacks are never persisted. Processor identity labels are allowlisted, output tenant/meeting scope and citations are rebuilt and validated, and participant identity is accepted only from authorized exact speaker-roster evidence. Diarization labels remain usable when identity is unverified, with `verifiedParticipantId: null`.
+
+Routes are same-origin under `/meetings/:meetingId/recordings`. Every operation requires local development identity and correlation headers. Status returns transcript/assertion content only after current centralized policy checks and only once processing completes. Consent withdrawal, policy/retention changes, quarantine, and deletion remove derived knowledge from retrieval; deletion also clears audio bytes. Audit events contain identifiers, outcomes, reason codes, and correlation only—never bytes or generated text.
+
+In this local adapter, policy quarantine preserves uploaded bytes for disposition or legal-hold handling while active/held. A retention transition to `pending-deletion`, `deletion-in-progress`, or `deleted` clears local bytes immediately. Production storage must implement the documented durable disposition workflow and lineage-wide deletion acknowledgements.
+
+This is a local-development adapter, not production media storage. It intentionally lacks durable storage, authenticated identity, encrypted transport/object storage guarantees, durable queues, malware/media validation, real speech processing, multi-instance idempotency, and crash recovery.

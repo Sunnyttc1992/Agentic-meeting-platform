@@ -1,0 +1,85 @@
+# Handoff prompt for ChatGPT
+
+Paste everything below the line into ChatGPT (or Codex) at the start of the session.
+
+---
+
+You are taking over an in-progress project from another AI coding assistant. Read this whole prompt before changing anything.
+
+## Project
+
+**smart-meeting-platform** (`D:\Data Science Project\smart-meeting-platform`, Windows, Node 24, React 19 + Vite 6, no TypeScript). It's an executive meeting-intelligence app. It records a meeting with consent, transcribes it, and produces a cited summary, decisions, risks, open questions, and an action plan. Every generated item must link back to the transcript segments that support it.
+
+Read these first, in order:
+1. `AGENTS.md`: project rules and **durable product decisions**. Follow them unless I explicitly change them.
+2. `CONTEXT.md`: domain vocabulary (Tenant, Principal, Recording Lease, Knowledge Assertion, Transcript Citation, and so on). Use these terms.
+3. `server/README.md`: how to run the real pipeline and its settings.
+4. `docs/security/local-meeting-pipeline.md`: data flow, controls, and what still blocks wider delivery.
+5. `docs/acceptance/meeting-intelligence-traceability.md`: the 40-requirement acceptance matrix (CAP / AUTH / PRIV / SEC / AI) we measure progress against.
+
+## Decisions already made (do not reverse without asking me)
+
+- Visual direction is the "Executive Ledger" look: graphite surfaces, warm copper accents, Cormorant Garamond + Manrope.
+- Microsoft Teams is the first integration and must stay explicitly *unconnected* until a server-side Entra/OAuth app exists. No Zoom anywhere.
+- Speech-to-text is **local Whisper** (`@huggingface/transformers`, ONNX, in the Node server). Meeting audio must never leave the machine.
+- Summary and action plan come from **Claude via the Anthropic API** (`@anthropic-ai/sdk`, model `claude-sonnet-5-5`, see `server/intelligence.js`). Only transcript text, participant IDs, and the meeting date are sent. If I ask you to change the summary model or provider, confirm with me first and update `AGENTS.md`.
+- Delivery is **local only** for now. The preview server binds to 127.0.0.1, and the API also checks for a loopback socket and Host header (`server/local-only.js`). Do not expose it on a LAN or deploy it until Microsoft Entra sign-in replaces the development `x-tenant-id` / `x-user-id` headers.
+
+## Security rules we agreed (non-negotiable)
+
+- Authorization happens before retrieval. Tenant comes from identity, never from request IDs. Cross-tenant IDs must look like nonexistent IDs.
+- Never record without current consent from every required participant and a recordable classification. Never-record categories fail closed.
+- Recording leases stay short-lived (5 minutes). The UI renews them, and every renewal re-checks policy.
+- Processor and model output is **untrusted**:
+  - The platform re-validates citations, withholding and counting unsupported items.
+  - It keeps owners only if they are meeting participants, and deadlines only if they are real dates.
+  - It enforces size limits.
+  - Failures collapse to `PROCESSOR_FAILED` and store nothing.
+- Audit events contain identifiers and reason codes only. They never contain transcript text, audio, prompts, or secrets. They are hash-chained per tenant (`server/audit.js`).
+- No secrets in the browser, in source, or in audit. Keys are read only on the server from the environment.
+- Be honest in the UI: fakes are labeled as fakes, unknown speakers are "Speaker not identified", and missing owners or dates are "Unassigned" / "Not stated".
+
+## Code map
+
+- `server/platform.js`: `MeetingIntelligencePlatform`, the core domain service. Every operation is audited.
+- `server/policy.js`: the authorization and capture policy engine.
+- `server/storage.js`: the tenant-scoped storage contract. The in-memory adapter is a prototype; production needs Postgres, object storage, and KMS.
+- `server/speech.js`, `server/transcription.js`, `server/intelligence.js`, `server/wav.js`: the processing pipeline.
+- `server/http.js`, `server/local-preview.js`, `server/development.js`: the HTTP API, the local server, and dev wiring.
+- `src/App.jsx`: the Executive Ledger UI. `src/RecordingStudio.jsx` is the capture-to-results flow. `src/styles.css` is dense one-line-per-area CSS; keep that style.
+- Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact (Sites handoff).
+
+## How to work
+
+- Run tests with `npm test` (136 tests, all passing at handoff). `npm run test:server` runs only the server tests.
+- Build and run locally with `npm run build` then `npm run preview` (http://localhost:4173). The first transcription downloads the Whisper model into `.cache/models`. Copy `.env.example` to an ignored local `.env` and set `ANTHROPIC_API_KEY` for summaries; without it the app runs transcription only. `.env` is loaded only by Node, never the Vite client.
+- Before a Sites handoff: `npm run build && npm run test:sites`. The build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
+- Add or update a test for every behavior change, especially security behavior. Match the existing test style (`node:test`, `assert/strict`, canary strings to prove nothing leaks).
+- Gotchas:
+  - Headless Chrome won't render narrower than 500px; use an iframe or the DevTools protocol for phone-width checks.
+  - A preview server may already be running on port 4173. Restart it after server changes.
+- Create a safe Git checkpoint before work can be interrupted. Never commit `.env`, `.cache/`, `node_modules/`, `.npm-cache/`, `dist/`, or any key. `.env.example` is safe to commit.
+
+## Status and next steps
+
+Done:
+- The Executive Ledger UI, with design QA passing.
+- Consent-gated recording with lease renewal.
+- Local Whisper transcription.
+- Claude summary and action plan with citation validation.
+- The tenant-scoped storage contract with an outbox.
+- The tamper-evident audit chain.
+- Management briefing, commitments, and privacy access views.
+
+Rough progress: the UI prototype is about 85–90% done. The secure prototype milestone is about 60% of the acceptance matrix, proven with in-memory stores and fakes. The production-ready product is about 20% done.
+
+Not yet verified live: a real Claude call (no API key was available). The request shape follows the official SDK docs and is tested with a stand-in client. Watch the first real run.
+
+Suggested next work. Ask me which one; items 1–3 need my input:
+1. Microsoft Entra sign-in. This is what unblocks colleagues using it. It needs my tenant ID and app registration.
+2. Durable storage (PostgreSQL + encrypted object storage + KMS). It needs my choice of driver and hosting.
+3. Confirm Anthropic data-retention and processing terms for meeting transcripts.
+4. Retry for failed processing jobs.
+5. Retention expiry scheduler (PRIV-04), secure export to replace the placeholder "Download meeting record" button (SEC-06), and API rate limits (AUTH-10). None of these need my input.
+
+Start by reading the files listed above. Run `npm test` to confirm a green baseline, then tell me what you plan to do before making large changes.
