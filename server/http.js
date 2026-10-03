@@ -1,6 +1,7 @@
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { DomainError } from './errors.js'
+import { createRateLimiter, rateLimitClass } from './rate-limit.js'
 import { isLoopbackRequest, rejectNonLoopback } from './local-only.js'
 import { createPipelineReadiness } from './pipeline-readiness.js'
 
@@ -85,7 +86,7 @@ function validatePreflight(body) {
   return body
 }
 
-export function createHttpHandler(platform, { pipelineReadiness = createPipelineReadiness() } = {}) {
+export function createHttpHandler(platform, { pipelineReadiness = createPipelineReadiness(), rateLimiter = createRateLimiter() } = {}) {
   return async (request, response) => {
     let correlationId = randomUUID()
     let isPrivacyAccessRead = false
@@ -96,6 +97,13 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
       if (request.method === 'GET' && url.pathname === '/pipeline/readiness' && !isLoopbackRequest(request)) return rejectNonLoopback(response)
       const suppliedCorrelationId = header(request, 'x-correlation-id')
       if (!suppliedCorrelationId) throw new DomainError('INVALID_HEADER', 'x-correlation-id is required', 400)
+      // Throttle before any platform work. Throttled requests are deliberately
+      // not audited one by one, so a flood cannot amplify into the audit log.
+      const limit = rateLimiter.check(`${header(request, 'x-tenant-id') ?? ''}:${header(request, 'x-user-id') ?? ''}`, rateLimitClass(request.method, url.pathname))
+      if (!limit.allowed) {
+        response.writeHead(429, { 'content-type': 'application/json', 'retry-after': String(limit.retryAfterSeconds) })
+        return response.end(JSON.stringify(errorBody('RATE_LIMITED', 'Too many requests; please wait and try again', suppliedCorrelationId)))
+      }
       correlationId = suppliedCorrelationId
       const commitmentsRead = request.method === 'GET' && url.pathname === '/commitments'
       const managementBriefingRead = request.method === 'GET' && url.pathname === '/management-briefing'

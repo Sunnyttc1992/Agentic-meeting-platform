@@ -89,6 +89,11 @@ Suggested next work. Ask me which one; items 1–3 need my input:
    - Rules are `PolicyEngine({ retentionPolicies })`. Use is blocked at expiry with `RETENTION_EXPIRED`.
    - `enforceRetention(tenantId)` deletes expired content under `service:retention` through the shared `#disposeMeetingContent` path. Legal hold blocks it, and re-running does nothing.
    - The local preview sweeps every minute. Tests are in `server/retention.test.js`. Details are in `docs/security/retention-deletion.md`.
-7. Next, recommended: API rate limits and request quotas (AUTH-10), especially on processing, retry, and export. It needs no input from me.
+7. Done (Claude, 2026-10-03): API rate limits (AUTH-10).
+   - `server/rate-limit.js` defines per-principal, per-class fixed windows: processing and retry 6/min, capture 30, export 10, AI 30, standard 600. They are applied in `createHttpHandler` before platform work.
+   - An excess request returns 429 with `Retry-After` and is not audited.
+   - The studio's status poll skips a throttled tick instead of failing.
+   - Tests are in `server/rate-limit.test.js`.
+8. Every remaining roadmap item needs a decision from me: Entra sign-in, durable storage, Anthropic data terms, or speaker diarization. Ask before starting any of them.
 
 Start by reading the files listed above. Run `npm test` to confirm a green baseline, then tell me what you plan to do before making large changes.

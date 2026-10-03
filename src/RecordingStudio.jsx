@@ -265,7 +265,7 @@ export function RecordingStudio({ onBack }) {
 
   useEffect(() => {
     if (!state.recordingId || !["queued","processing"].includes(state.phase)) return undefined
-    const timer=setInterval(async()=>{ try { const response=await fetch(`/meetings/${MEETING_ID}/recordings/${state.recordingId}`,{headers:authHeaders()}); const result=await response.json(); if(!response.ok) throw new Error(result?.error?.message); setProcessingResult(result); dispatch({type:"PROCESS_STATUS",state:result.recording.state,progress:result.recording.progress,result,error:result.recording.error}) } catch(error){dispatch({type:"ERROR",error:error.message})} },350)
+    const timer=setInterval(async()=>{ try { const response=await fetch(`/meetings/${MEETING_ID}/recordings/${state.recordingId}`,{headers:authHeaders()}); if(response.status===429)return; const result=await response.json(); if(!response.ok) throw new Error(result?.error?.message); setProcessingResult(result); dispatch({type:"PROCESS_STATUS",state:result.recording.state,progress:result.recording.progress,result,error:result.recording.error}) } catch(error){dispatch({type:"ERROR",error:error.message})} },350)
     return()=>clearInterval(timer)
   },[state.recordingId,state.phase])
 

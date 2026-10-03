@@ -38,6 +38,11 @@ Status: working end to end on one machine. It is not yet deployable to other use
   - The response is `no-store` and `nosniff`.
   - Every attempt is audited as `meeting.export` with no content.
 - **Retention (PRIV-04).** Content expires 30 days after its first upload in development (rules are per tenant and classification). From that instant every read, export, AI retrieval, and new recording is refused with `RETENTION_EXPIRED`. A sweep running every minute then deletes the content, unless a legal hold applies. See `retention-deletion.md`.
+- **Rate limits (AUTH-10).** Every API request is throttled per tenant and user before any platform work runs. The limits are per minute: processing and retry 6, capture (preflight, create, upload, delete) 30, export 10, AI retrieval 30, everything else 600, which leaves room for the studio's status polling.
+  - An excess request gets `429 RATE_LIMITED` with `Retry-After`.
+  - Throttled requests are not audited one by one, so a flood cannot amplify into the audit log.
+  - The limiter tracks at most 10,000 keys and refuses new ones when full.
+  - Limits are in process memory. Once identity is real (Entra), a multi-instance deployment needs a shared store.
 - **Audit.** Every step emits content-free, hash-chained audit events (see `audit-events.md`).
 
 ## What still blocks wider delivery
