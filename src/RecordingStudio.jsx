@@ -353,6 +353,19 @@ export function RecordingStudio({ onBack }) {
     dispatch({ type: "DISCARD" })
   }
 
+  // The server decides whether a retry is allowed and re-checks consent and
+  // policy before re-queueing; the studio only offers what status reports.
+  async function retryProcessing() {
+    try {
+      const response = await fetch(`/meetings/${MEETING_ID}/recordings/${state.recordingId}/retry`, { method: "POST", headers: { ...authHeaders(), "content-type": "application/json" }, body: "{}" })
+      const result = await response.json()
+      if (!response.ok) throw Object.assign(new Error(result?.error?.message ?? "Retry could not start."), { code: result?.error?.code })
+      dispatch({ type: "UPLOAD_COMPLETE" })
+    } catch (error) {
+      dispatch({ type: ["CONSENT_NOT_GRANTED", "CONSENT_EXPIRED", "RECORDING_POLICY_CHANGED", "RETENTION_RESTRICTED"].includes(error.code) ? "POLICY_STOP" : "ERROR", reason: error.message, error: error.message })
+    }
+  }
+
   async function processLocally() {
     let blob=captureRef.current.blob(); if(!blob||!state.leaseId)return
     const transcribes = state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE)
@@ -404,6 +417,7 @@ export function RecordingStudio({ onBack }) {
         {state.phase === "stopped" && <div className="center-state" data-capture-source={fixtureMode ? "synthetic-fixture" : "microphone"}><Check size={38} /><p className="stage-index">{fixtureMode ? "SYNTHETIC TEST COMPLETE" : "CAPTURE COMPLETE"}</p><h2>{fixtureMode ? "Synthetic fixture complete." : "Audio preserved locally."}</h2><CaptureTruthfulCopy mode={fixtureMode ? "synthetic" : "real"} phase="stopped" />{audioUrl && !fixtureMode && <audio className="audio-player" src={audioUrl} controls aria-label="Captured microphone audio review" />}<div className="capture-actions">{!fixtureMode && <button className="record-button" onClick={processLocally}><Waveform size={17}/> Process locally</button>}<button className="discard-button" onClick={discard}><Trash size={17} /> Discard permanently</button></div></div>}
         {["hashing","uploading","queued","processing"].includes(state.phase) && <div className="center-state"><Waveform size={40}/><p className="stage-index">{state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "LOCAL TRANSCRIPTION" : "LOCAL DETERMINISTIC PROCESSOR"}</p><h2>{state.phase === "hashing"?"Preparing and verifying audio…":state.phase === "uploading"?"Uploading to this machine's processor…":state.phase === "queued"?"Queued for processing…":state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE)?"Transcribing and summarizing…":"Building cited intelligence…"}</h2><div className="progress-track"><i style={{width:`${state.progress}%`}}/></div><p>{state.progress}% · {state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "speech is transcribed on this machine; long meetings take a few minutes" : "development fake, not real speech recognition or diarization"}</p></div>}
         {state.phase === "completed" && <MeetingIntelligenceResult result={processingResult} />}
+        {state.phase === "failed" && <div className="center-state danger-state"><Warning size={42} /><p className="stage-index">PROCESSING FAILED</p><h2>The recording could not be processed.</h2><p>{processingResult?.recording?.retryAvailable ? "The audio is still held on this machine. You can try again; consent and policy are checked again first." : "The retry limit was reached or the audio is no longer available. Please record the meeting again."}</p>{processingResult?.recording?.retryAvailable ? <button className="copper-button" onClick={retryProcessing}>Retry processing</button> : <button className="copper-button" onClick={() => preflight()}>Start a new recording</button>}</div>}
         {state.phase === "discarded" && <div className="center-state"><ShieldCheck size={40} /><h2>Audio discarded.</h2><p>Microphone access ended and all in-memory chunks were cleared.</p><button className="copper-button" onClick={() => preflight()}>Start a new consent check</button></div>}
         {["blocked", "policy-stopped", "error"].includes(state.phase) && <div className="center-state danger-state"><Warning size={42} /><p className="stage-index">CAPTURE STOPPED</p><h2>{state.phase === "blocked" ? "Policy prevents recording." : "Recording cannot continue."}</h2><p>{state.error || state.stopReason}</p>{state.phase === "error" && <button className="copper-button" onClick={() => preflight()}>Try again</button>}</div>}
       </div>

@@ -79,7 +79,7 @@ Suggested next work. Ask me which one; items 1–3 need my input:
 1. Microsoft Entra sign-in. This is what unblocks colleagues using it. It needs my tenant ID and app registration.
 2. Durable storage (PostgreSQL + encrypted object storage + KMS). It needs my choice of driver and hosting.
 3. Confirm Anthropic data-retention and processing terms for meeting transcripts.
-4. Retry for failed processing jobs.
-5. Retention expiry scheduler (PRIV-04), secure export to replace the placeholder "Download meeting record" button (SEC-06), and API rate limits (AUTH-10). None of these need my input.
+4. Done (Claude, 2026-10-03): retry for failed processing. `retryProcessing` is organizer-only, audited as `recording.process.retry`, limited to 3 attempts in total, and re-checks consent and policy (it quarantines instead of retrying after a withdrawal). The route is `POST /meetings/:id/recordings/:rid/retry`, and status reports `retryAvailable`. The studio now shows a "Processing failed" panel with Retry.
+5. Next, recommended: secure export (SEC-06) to replace the placeholder "Download meeting record" alert in `src/App.jsx`. It should be an authorized (meetingAccess), audited, content-free-audit download of the completed summary, action plan, and transcript with citations. After that: retention expiry scheduler (PRIV-04) and API rate limits (AUTH-10). None of these need my input.
 
 Start by reading the files listed above. Run `npm test` to confirm a green baseline, then tell me what you plan to do before making large changes.

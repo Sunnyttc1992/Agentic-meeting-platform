@@ -283,3 +283,63 @@ test('lease renewal updates the lease during capture without changing the phase'
   const authorized = recordingReducer(initialRecordingState, { type: 'PREFLIGHT_AUTHORIZED', leaseId: 'l', authorizationExpiresAt: 'x', allowedMimeTypes: ['audio/wav'] })
   assert.deepEqual(authorized.allowedMimeTypes, ['audio/wav'])
 })
+
+// A client whose first `failures` calls throw (a transient outage), then succeed.
+function flakyClaude(failures, payload) {
+  let calls = 0
+  return {
+    get calls() { return calls },
+    client: { beta: { messages: { create: async () => {
+      calls += 1
+      if (calls <= failures) throw new Error('upstream unavailable')
+      return { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(payload) }] }
+    } } } },
+  }
+}
+
+test('a failed job can be retried by its organizer and then completes with the same validated output', async () => {
+  const claude = flakyClaude(1, HOSTILE_RESPONSE)
+  const state = pipelineSetup(new ClaudeMeetingIntelligence({ client: claude.client }))
+  const failed = await runRecording(state)
+  assert.equal(failed.recording.state, 'failed')
+  assert.equal(failed.recording.retryAvailable, true)
+
+  assert.throws(() => state.platform.retryProcessing(sam, 'meeting-1', failed.recording.id), { code: 'RECORDING_FORBIDDEN' }, 'only the organizer may retry')
+  assert.throws(() => state.platform.retryProcessing({ tenantId: 'southstar', userId: 'alex' }, 'meeting-1', failed.recording.id), { code: 'MEETING_NOT_FOUND' })
+  const queued = state.platform.retryProcessing(alex, 'meeting-1', failed.recording.id, 'corr-retry')
+  assert.equal(queued.state, 'queued')
+  assert.throws(() => state.platform.retryProcessing(alex, 'meeting-1', failed.recording.id), { code: 'RECORDING_NOT_RETRYABLE' }, 'a queued job cannot be double-queued')
+  await state.jobs.shift()()
+
+  const status = state.platform.getRecording(alex, 'meeting-1', failed.recording.id)
+  assert.equal(status.recording.state, 'completed')
+  assert.equal(status.recording.retryAvailable, false)
+  assert.equal(status.recording.withheldAssertions, 1)
+  assert.equal(claude.calls, 2)
+  const retryAudit = state.audit.all().find((event) => event.correlationId === 'corr-retry' && event.action === 'recording.process.retry')
+  assert.deepEqual([retryAudit.outcome, retryAudit.reason], ['allowed', null])
+})
+
+test('retries are bounded and re-check consent, quarantining instead of retrying after a withdrawal', async () => {
+  const always = flakyClaude(Infinity, HOSTILE_RESPONSE)
+  const state = pipelineSetup(new ClaudeMeetingIntelligence({ client: always.client }))
+  const first = await runRecording(state)
+  const id = first.recording.id
+  for (let attempt = 2; attempt <= 3; attempt += 1) {
+    state.platform.retryProcessing(alex, 'meeting-1', id)
+    await state.jobs.shift()()
+  }
+  const exhausted = state.platform.getRecording(alex, 'meeting-1', id)
+  assert.equal(exhausted.recording.state, 'failed')
+  assert.equal(exhausted.recording.retryAvailable, false)
+  assert.throws(() => state.platform.retryProcessing(alex, 'meeting-1', id), { code: 'RETRY_LIMIT_REACHED' })
+  assert.equal(always.calls, 3, 'at most three model calls per recording')
+
+  const withdrawn = pipelineSetup(new ClaudeMeetingIntelligence({ client: flakyClaude(1, HOSTILE_RESPONSE).client }))
+  const failed = await runRecording(withdrawn)
+  withdrawn.platform.recordConsent(sam, 'meeting-1', { participantId: 'sam', capturedAt: '2026-10-03T11:59:30Z', expiresAt: '2026-10-03T15:00:00Z', policyVersion: 'v1', decision: 'withdrawn', method: 'explicit' })
+  assert.throws(() => withdrawn.platform.retryProcessing(alex, 'meeting-1', failed.recording.id))
+  assert.equal(withdrawn.jobs.length, 0, 'nothing is queued after consent is withdrawn')
+  const quarantined = withdrawn.platform.getRecording(alex, 'meeting-1', failed.recording.id)
+  assert.deepEqual([quarantined.recording.state, quarantined.recording.retryAvailable], ['quarantined', false])
+})

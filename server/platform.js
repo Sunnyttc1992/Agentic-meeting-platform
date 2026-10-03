@@ -9,6 +9,9 @@ import { verifyAuditChain } from './audit.js'
 import { InMemoryCommitmentRegistry } from './adapters/in-memory.js'
 
 const PROCESSOR_FAILED = 'PROCESSOR_FAILED'
+// One first attempt plus two retries. Bounded so a persistently failing
+// processor cannot be driven into an unbounded loop of model calls.
+const MAX_PROCESSING_ATTEMPTS = 3
 const POLICY_REVOKED = 'POLICY_REVOKED'
 const PROCESSING_CANCELLED = 'PROCESSING_CANCELLED'
 // Allowlisted processor labels and the provenance mode each one may claim.
@@ -61,7 +64,7 @@ const SAFE_AUDIT_REASONS = new Set([
 ])
 const SAFE_AUDIT_ACTIONS = new Set([
   'meeting.create', 'consent.record', 'recording.preflight', 'recording.create', 'recording.upload',
-  'recording.process', 'recording.process.complete', 'recording.status', 'recording.delete',
+  'recording.process', 'recording.process.retry', 'recording.process.complete', 'recording.status', 'recording.delete',
   'transcript.append', 'knowledge.assertions.add', 'knowledge.read', 'knowledge.search',
   'ai.retrieve', 'privacy-access.read',
   'commitment.query',
@@ -95,6 +98,8 @@ const view = (recording) => ({
   byteLength: recording.byteLength,
   processor: recording.processor ?? null,
   withheldAssertions: recording.withheldAssertions ?? 0,
+  retryAvailable: recording.state === 'failed' && recording.error === PROCESSOR_FAILED
+    && (recording.processingAttempts ?? 1) < MAX_PROCESSING_ATTEMPTS && !recording.contentClearedAt,
   error: recording.error ?? null,
 })
 
@@ -1024,7 +1029,32 @@ export class MeetingIntelligencePlatform {
       }
       if (['queued', 'processing', 'completed'].includes(recording.state)) return view(recording)
       invariant(recording.state === 'uploaded', 'RECORDING_NOT_UPLOADED', 'Recording must be uploaded before processing', 409)
-      recording.state = 'queued'; recording.progress = 35
+      recording.state = 'queued'; recording.progress = 35; recording.processingAttempts = 1
+      this.recordings.save(recording)
+      this.schedule(() => this.#process(actor.tenantId, recording.id, correlationId))
+      return view(recording)
+    }, recordingId)
+  }
+
+  // Re-queues a failed job for its organizer, a bounded number of times. Policy
+  // is evaluated exactly as for a first attempt: if consent, classification,
+  // or retention changed since the upload, the recording is quarantined
+  // instead of being processed again.
+  retryProcessing(input, meetingId, recordingId, correlationId = randomUUID()) {
+    const actor = principal(input)
+    return this.#audited(actor, correlationId, 'recording.process.retry', meetingId, () => {
+      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+      const recording = this.#recording(actor, meetingId, recordingId, true)
+      invariant(recording.state === 'failed' && recording.error === PROCESSOR_FAILED, 'RECORDING_NOT_RETRYABLE', 'Only a failed processing job can be retried', 409)
+      invariant((recording.processingAttempts ?? 1) < MAX_PROCESSING_ATTEMPTS, 'RETRY_LIMIT_REACHED', 'This recording has reached its processing retry limit', 409)
+      const decision = this.#recordingPolicyDecision(actor, meetingRecord, recording)
+      if (!decision.allowed) {
+        this.#quarantineRecording(meetingRecord, recording.id, decision.code)
+        this.policy.require(decision)
+      }
+      invariant(!recording.contentClearedAt && this.recordings.getBytes(actor.tenantId, recording.id), 'RECORDING_CONTENT_UNAVAILABLE', 'Recording audio is no longer available', 409)
+      recording.state = 'queued'; recording.progress = 35; recording.error = null
+      recording.processingAttempts = (recording.processingAttempts ?? 1) + 1
       this.recordings.save(recording)
       this.schedule(() => this.#process(actor.tenantId, recording.id, correlationId))
       return view(recording)
