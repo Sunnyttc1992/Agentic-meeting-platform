@@ -32,6 +32,7 @@ import { loadTeamsReadiness } from "./teamsIntegration.js";
 import { loadCommitments } from "./commitments.js";
 import { currentRecordEvidence } from "./currentRecordEvidence.js";
 import { loadManagementBriefing } from "./managementBriefing.js";
+import { downloadMeetingRecord } from "./meetingExport.js";
 
 const rows = [
   {
@@ -654,9 +655,10 @@ export function App() {
         </button>
         <button
           className="download-action"
-          onClick={() =>
-            window.alert("Prototype: meeting record export prepared.")
-          }
+          onClick={async () => {
+            const result = await downloadMeetingRecord();
+            if (!result.ok) window.alert(result.message);
+          }}
         >
           <DownloadSimple size={19} /> Download meeting record
         </button>

@@ -56,6 +56,17 @@ export class PolicyEngine {
       : { ...deny('MEETING_FORBIDDEN', 'Principal has no meeting access relationship'), posture: 'denied' }
   }
 
+  // Export is authorized separately from viewing: a participant may take a
+  // copy of a meeting record, but a management grant that allows reading the
+  // meeting does not extend to carrying it out of the system.
+  meetingExport({ principal, meeting, now }) {
+    const access = this.meetingAccess({ principal, meeting, now })
+    if (!access.allowed) return access
+    return access.posture === 'participant'
+      ? allow('Participant export')
+      : deny('EXPORT_FORBIDDEN', 'Exporting a meeting record requires participation in the meeting')
+  }
+
   // Audit integrity is a separate, explicitly granted read-only duty. Meeting
   // participation, management grants, and organizer status never imply it.
   auditIntegrity({ principal, now }) {

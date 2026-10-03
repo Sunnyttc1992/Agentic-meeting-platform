@@ -29,6 +29,14 @@ Status: working end to end on one machine. It is not yet deployable to other use
 - **No secrets in the client.** `ANTHROPIC_API_KEY` (or an `ant auth login` profile) is read only by the server. `.env.example` is a placeholder-only template; a real `.env` is Git-ignored and is loaded only by the local Node `dev`/`preview` commands. It must not use `VITE_` variables. Without credentials the server runs transcription only and says so in the UI.
 - **Local only.** The preview server binds to `127.0.0.1`. The API also requires a loopback socket address and a loopback `Host` header, which blocks DNS rebinding. The Vite dev server applies the same guard.
 - **Readiness without side effects.** `GET /pipeline/readiness` requires the same local development identity and is independently loopback-guarded. It returns only a loopback scope, Whisper runtime/cache booleans, an Anthropic credential-presence boolean, and the Teams `not-connected` posture. It never initializes Whisper, downloads model files, makes an Anthropic request, reads or returns a credential value, or transmits audio.
+- **Retry.** A failed job can be re-queued by its organizer, up to 3 attempts in total. Each retry is audited as `recording.process.retry` and re-runs the consent and policy checks; after a consent withdrawal the recording is quarantined instead.
+- **Export (SEC-06).** `GET /meetings/:id/export` returns a Markdown record of the meeting's authorized knowledge: summary, action plan, decisions, risks, questions, and transcript, all with source timestamps.
+  - Only *participants* may export. A management grant that allows viewing does not allow export (`EXPORT_FORBIDDEN`).
+  - Exporting requires processed content (`NO_MEETING_RECORD`) and an active meeting.
+  - The file carries a confidentiality notice and the audit correlation ID.
+  - Speech and model text is escaped so it cannot inject links, images, HTML, table cells, headings, or auto-linked URLs.
+  - The response is `no-store` and `nosniff`.
+  - Every attempt is audited as `meeting.export` with no content.
 - **Audit.** Every step emits content-free, hash-chained audit events (see `audit-events.md`).
 
 ## What still blocks wider delivery
@@ -37,4 +45,4 @@ Status: working end to end on one machine. It is not yet deployable to other use
 2. **Durable storage:** recordings, transcripts, and audit live in process memory and are lost on restart. This needs the PostgreSQL, object storage, and KMS adapter described in `docs/architecture/durable-storage-foundation.md`.
 3. **Data processing terms:** confirm that the Anthropic organization's data-retention and processing terms are acceptable for meeting transcripts before real meetings are processed.
 4. **Speaker identification:** owners come only from names stated in the meeting. Diarization and verified speaker binding are not implemented.
-5. **Retry:** a failed job cannot be re-run; the meeting must be recorded again.
+5. **Export lifecycle:** a downloaded file cannot be recalled. Revocation and deletion stop future exports but cannot reach copies already saved; expiring share links are not implemented.

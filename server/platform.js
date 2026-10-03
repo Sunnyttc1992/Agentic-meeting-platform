@@ -6,6 +6,7 @@ import { parseSpeechWav } from './wav.js'
 import { MicrosoftTeamsIntegrationAdapter } from './teams.js'
 import { assertMeetingStorageContract } from './storage.js'
 import { verifyAuditChain } from './audit.js'
+import { exportFilename, renderMeetingRecordMarkdown } from './meeting-export.js'
 import { InMemoryCommitmentRegistry } from './adapters/in-memory.js'
 
 const PROCESSOR_FAILED = 'PROCESSOR_FAILED'
@@ -66,7 +67,7 @@ const SAFE_AUDIT_ACTIONS = new Set([
   'meeting.create', 'consent.record', 'recording.preflight', 'recording.create', 'recording.upload',
   'recording.process', 'recording.process.retry', 'recording.process.complete', 'recording.status', 'recording.delete',
   'transcript.append', 'knowledge.assertions.add', 'knowledge.read', 'knowledge.search',
-  'ai.retrieve', 'privacy-access.read',
+  'ai.retrieve', 'privacy-access.read', 'meeting.export',
   'commitment.query',
   'management-briefing.read',
   'teams.readiness', 'teams.import.prepare',
@@ -1308,6 +1309,29 @@ export class MeetingIntelligencePlatform {
       const meetingRecord = this.#meeting(actor.tenantId, meetingId)
       this.policy.require(this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() }))
       return { meeting: meetingRecord, ...this.knowledge.forMeeting(actor.tenantId, meetingId) }
+    })
+  }
+
+  // Produces a downloadable record of one meeting's authorized knowledge.
+  // The audit event carries identifiers only; the document carries the same
+  // correlation ID so any copy can be traced back to this decision.
+  exportMeetingRecord(input, meetingId, correlationId = randomUUID()) {
+    const actor = principal(input)
+    return this.#audited(actor, correlationId, 'meeting.export', meetingId, () => {
+      const meetingRecord = this.#meeting(actor.tenantId, meetingId)
+      this.policy.require(this.policy.meetingExport({ principal: actor, meeting: meetingRecord, now: this.clock.now() }))
+      const { segments, assertions } = this.knowledge.forMeeting(actor.tenantId, meetingId)
+      invariant(segments.length > 0 || assertions.length > 0, 'NO_MEETING_RECORD', 'This meeting has no processed record to export yet', 409)
+      const completed = (this.recordings?.listForMeeting(actor.tenantId, meetingId) ?? []).filter((item) => item.state === 'completed')
+      return Object.freeze({
+        filename: exportFilename(meetingId),
+        contentType: 'text/markdown; charset=utf-8',
+        body: renderMeetingRecordMarkdown({
+          meeting: meetingRecord, segments, assertions,
+          processor: completed.at(-1)?.processor ?? null,
+          exportedBy: actor.userId, exportedAt: this.clock.now().toISOString(), correlationId,
+        }),
+      })
     })
   }
 

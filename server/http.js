@@ -106,6 +106,7 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
       const recordingsMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings$/)
       const bytesMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings\/([^/]+)\/bytes$/)
       const processMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings\/([^/]+)\/process$/)
+      const exportMatch = url.pathname.match(/^\/meetings\/([^/]+)\/export$/)
       const retryMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings\/([^/]+)\/retry$/)
       const statusMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings\/([^/]+)$/)
       const deleteMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings$/)
@@ -134,6 +135,16 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
       }
       if (request.method === 'POST' && recordingsMatch) { const body=await readJson(request); strictObject(body,['leaseId','contentType','byteLength','sha256'],['leaseId','contentType','byteLength','sha256']); return json(response,201,platform.createRecording(principalFrom(request),recordingsMatch[1],body,correlationId)) }
       if (request.method === 'PUT' && bytesMatch) { const contentType=String(header(request,'content-type')??'').toLowerCase(); const rawLength=header(request,'content-length'); const contentLength=rawLength===undefined?NaN:Number(rawLength); const bytes=await readBytes(request,platform.maxRecordingBytes); return json(response,200,platform.uploadRecording(principalFrom(request),bytesMatch[1],bytesMatch[2],{contentType,contentLength,bytes},correlationId)) }
+      if (request.method === 'GET' && exportMatch) {
+        const record = platform.exportMeetingRecord(principalFrom(request), exportMatch[1], correlationId)
+        response.writeHead(200, {
+          'content-type': record.contentType,
+          'content-disposition': `attachment; filename="${record.filename}"`,
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+        })
+        return response.end(record.body)
+      }
       if (request.method === 'POST' && retryMatch) { validatePreflight(await readJson(request)); return json(response,202,platform.retryProcessing(principalFrom(request),retryMatch[1],retryMatch[2],correlationId)) }
       if (request.method === 'POST' && processMatch) { validatePreflight(await readJson(request)); return json(response,202,platform.startProcessing(principalFrom(request),processMatch[1],processMatch[2],correlationId)) }
       if (request.method === 'GET' && statusMatch) return json(response,200,platform.getRecording(principalFrom(request),statusMatch[1],statusMatch[2],correlationId))

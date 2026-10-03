@@ -18,7 +18,7 @@ const RETENTION_STATES = new Set(["active", "pending-deletion", "deletion-in-pro
 const DELETION_STATES = new Set(["not-requested", "scheduled", "in-progress", "completed"])
 const AUDIT_ACTIONS = new Set([
   "meeting.create", "consent.record", "recording.preflight", "recording.create", "recording.upload",
-  "recording.process", "recording.process.complete", "recording.status", "recording.delete",
+  "recording.process", "recording.process.retry", "recording.process.complete", "meeting.export", "recording.status", "recording.delete",
   "transcript.append", "knowledge.assertions.add", "knowledge.read", "knowledge.search",
   "ai.retrieve", "privacy-access.read",
 ])

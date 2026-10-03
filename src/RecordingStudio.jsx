@@ -4,6 +4,7 @@ import { initialRecordingState, recordingReducer } from "./recordingMachine.js"
 import { createMediaCapture } from "./mediaCapture.js"
 import { normalizeIngestMimeType, SPEECH_WAV_MIME_TYPE } from "./recordingFormats.js"
 import { toSpeechWav } from "./audioTranscode.js"
+import { downloadMeetingRecord } from "./meetingExport.js"
 
 const MEETING_ID = "meeting-1"
 // Leases stay short-lived; the studio renews one this long before it expires,
@@ -113,7 +114,7 @@ const dueDate = (iso) => iso ? new Date(iso).toLocaleDateString(undefined, { yea
 
 // Every generated item shows the transcript moments it cites. Items the
 // platform could not tie to this transcript were withheld before storage.
-export function MeetingIntelligenceResult({ result }) {
+export function MeetingIntelligenceResult({ result, onDownload = null }) {
   const segments = result?.segments ?? []
   const assertions = result?.assertions ?? []
   const mode = segments[0]?.provenance?.mode ?? assertions[0]?.provenance?.mode
@@ -127,6 +128,7 @@ export function MeetingIntelligenceResult({ result }) {
   return <div className="processing-complete" data-processor-mode={mode ?? "unknown"}>
     <p className="stage-index">{label} · COMPLETE</p>
     <h2>{mode === "local-whisper-transcript-only" ? "Meeting transcript" : "Cited meeting intelligence"}</h2>
+    {onDownload && segments.length > 0 && <button className="copper-button result-download" onClick={onDownload}>Download meeting record</button>}
     {mode === "local-whisper-transcript-only" && <p className="intelligence-note">Summary and action plan are not configured on this server. Set <code>ANTHROPIC_API_KEY</code> and restart it to generate them.</p>}
     {segments.length === 0 && <p className="intelligence-note">No speech was recognized in this recording.</p>}
     {withheld > 0 && <p className="intelligence-note">{withheld} generated {withheld === 1 ? "item was" : "items were"} withheld because {withheld === 1 ? "it" : "they"} could not be tied to this transcript.</p>}
@@ -416,7 +418,7 @@ export function RecordingStudio({ onBack }) {
         {state.phase === "recording" && <div className="live-stage" data-capture-source={mockMode ? "synthetic-fixture" : "microphone"}><div className="live-pulse"><i /><span>{mockMode ? "SYNTHETIC TEST ACTIVE" : "RECORDING ACTIVE"}</span></div><div className="elapsed">{displayTime(elapsed)}</div><div className="signal" aria-label={mockMode ? "Synthetic fixture progress; no microphone input or audio" : "Microphone input active"} aria-hidden={mockMode ? "true" : undefined}>{[1,2,3,4,5,6,7,8,9,10,11,12].map((bar) => <i key={bar} style={{"--bar": `${20 + ((bar * 23) % 70)}%`}} />)}</div><CaptureTruthfulCopy mode={mockMode ? "synthetic" : "real"} phase="recording" /><button className="stop-button" onClick={userStop}><Stop size={18} weight="fill" /> {mockMode ? "Stop synthetic fixture" : "Stop recording"}</button></div>}
         {state.phase === "stopped" && <div className="center-state" data-capture-source={fixtureMode ? "synthetic-fixture" : "microphone"}><Check size={38} /><p className="stage-index">{fixtureMode ? "SYNTHETIC TEST COMPLETE" : "CAPTURE COMPLETE"}</p><h2>{fixtureMode ? "Synthetic fixture complete." : "Audio preserved locally."}</h2><CaptureTruthfulCopy mode={fixtureMode ? "synthetic" : "real"} phase="stopped" />{audioUrl && !fixtureMode && <audio className="audio-player" src={audioUrl} controls aria-label="Captured microphone audio review" />}<div className="capture-actions">{!fixtureMode && <button className="record-button" onClick={processLocally}><Waveform size={17}/> Process locally</button>}<button className="discard-button" onClick={discard}><Trash size={17} /> Discard permanently</button></div></div>}
         {["hashing","uploading","queued","processing"].includes(state.phase) && <div className="center-state"><Waveform size={40}/><p className="stage-index">{state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "LOCAL TRANSCRIPTION" : "LOCAL DETERMINISTIC PROCESSOR"}</p><h2>{state.phase === "hashing"?"Preparing and verifying audio…":state.phase === "uploading"?"Uploading to this machine's processor…":state.phase === "queued"?"Queued for processing…":state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE)?"Transcribing and summarizing…":"Building cited intelligence…"}</h2><div className="progress-track"><i style={{width:`${state.progress}%`}}/></div><p>{state.progress}% · {state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "speech is transcribed on this machine; long meetings take a few minutes" : "development fake, not real speech recognition or diarization"}</p></div>}
-        {state.phase === "completed" && <MeetingIntelligenceResult result={processingResult} />}
+        {state.phase === "completed" && <MeetingIntelligenceResult result={processingResult} onDownload={async () => { const result = await downloadMeetingRecord({ meetingId: MEETING_ID }); if (!result.ok) window.alert(result.message) }} />}
         {state.phase === "failed" && <div className="center-state danger-state"><Warning size={42} /><p className="stage-index">PROCESSING FAILED</p><h2>The recording could not be processed.</h2><p>{processingResult?.recording?.retryAvailable ? "The audio is still held on this machine. You can try again; consent and policy are checked again first." : "The retry limit was reached or the audio is no longer available. Please record the meeting again."}</p>{processingResult?.recording?.retryAvailable ? <button className="copper-button" onClick={retryProcessing}>Retry processing</button> : <button className="copper-button" onClick={() => preflight()}>Start a new recording</button>}</div>}
         {state.phase === "discarded" && <div className="center-state"><ShieldCheck size={40} /><h2>Audio discarded.</h2><p>Microphone access ended and all in-memory chunks were cleared.</p><button className="copper-button" onClick={() => preflight()}>Start a new consent check</button></div>}
         {["blocked", "policy-stopped", "error"].includes(state.phase) && <div className="center-state danger-state"><Warning size={42} /><p className="stage-index">CAPTURE STOPPED</p><h2>{state.phase === "blocked" ? "Policy prevents recording." : "Recording cannot continue."}</h2><p>{state.error || state.stopReason}</p>{state.phase === "error" && <button className="copper-button" onClick={() => preflight()}>Try again</button>}</div>}
