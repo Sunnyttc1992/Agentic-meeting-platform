@@ -37,6 +37,7 @@ Status: working end to end on one machine. It is not yet deployable to other use
   - Speech and model text is escaped so it cannot inject links, images, HTML, table cells, headings, or auto-linked URLs.
   - The response is `no-store` and `nosniff`.
   - Every attempt is audited as `meeting.export` with no content.
+- **Retention (PRIV-04).** Content expires 30 days after its first upload in development (rules are per tenant and classification). From that instant every read, export, AI retrieval, and new recording is refused with `RETENTION_EXPIRED`. A sweep running every minute then deletes the content, unless a legal hold applies. See `retention-deletion.md`.
 - **Audit.** Every step emits content-free, hash-chained audit events (see `audit-events.md`).
 
 ## What still blocks wider delivery

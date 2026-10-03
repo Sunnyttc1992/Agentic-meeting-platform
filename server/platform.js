@@ -49,8 +49,12 @@ const POLICY_REASON_CODES = new Set([
   'TENANT_MISMATCH', 'NOT_ORGANIZER', 'NEVER_RECORD', 'RETENTION_RESTRICTED',
   'CLASSIFICATION_REQUIRED', 'SENSITIVE_RECORDING_DENIED', 'CONSENT_REQUIRED',
   'CONSENT_NOT_GRANTED', 'CONSENT_POLICY_MISMATCH', 'CONSENT_MALFORMED',
-  'CONSENT_EXPIRED', 'RECORDING_POLICY_CHANGED', PROCESSING_CANCELLED,
+  'CONSENT_EXPIRED', 'RECORDING_POLICY_CHANGED', PROCESSING_CANCELLED, 'RETENTION_EXPIRED',
 ])
+// The retention scheduler acts under this tenant-scoped service identity. It is
+// never accepted from a request, and it can only expire content that current
+// policy says is past its retention date.
+const RETENTION_SERVICE_ID = 'service:retention'
 const DELETE_BYTES_ON_REVOKE = new Set(['pending-deletion', 'deletion-in-progress', 'deleted'])
 const AUDIT_TIMELINE_LIMIT = 100
 const SAFE_AUDIT_REASONS = new Set([
@@ -58,7 +62,7 @@ const SAFE_AUDIT_REASONS = new Set([
   'MEETING_FORBIDDEN', 'MEETING_NOT_FOUND', 'RECORDING_NOT_FOUND', 'PROCESSOR_FAILED',
   'INVALID_RECORDING_LEASE', 'LEASE_BINDING_MISMATCH', 'RECORDING_LEASE_REVOKED',
   'RECORDING_LEASE_EXPIRED', 'RECORDING_LEASE_REPLAYED', 'RECORDING_POLICY_CHANGED',
-  'RECORDING_AUTHORIZATION_EXPIRED', 'LEGAL_HOLD', 'DELETE_FORBIDDEN',
+  'RECORDING_AUTHORIZATION_EXPIRED', 'LEGAL_HOLD', 'DELETE_FORBIDDEN', 'EXPORT_FORBIDDEN', 'NO_MEETING_RECORD',
   'ASSERTION_REPLAY_CONFLICT', 'INVALID_COMMITMENT_OWNER',
   'UNTRUSTED_ACTION_ASSERTION', UNTRUSTED_PROCESSOR_PROVENANCE, 'INVALID_MANUAL_ASSERTION',
   'TEAMS_NOT_CONNECTED', 'INVALID_TEAMS_IMPORT', 'INVALID_TEAMS_MEETING_ID', 'INVALID_TEAMS_IMPORT_SOURCE',
@@ -67,7 +71,7 @@ const SAFE_AUDIT_ACTIONS = new Set([
   'meeting.create', 'consent.record', 'recording.preflight', 'recording.create', 'recording.upload',
   'recording.process', 'recording.process.retry', 'recording.process.complete', 'recording.status', 'recording.delete',
   'transcript.append', 'knowledge.assertions.add', 'knowledge.read', 'knowledge.search',
-  'ai.retrieve', 'privacy-access.read', 'meeting.export',
+  'ai.retrieve', 'privacy-access.read', 'meeting.export', 'retention.expire',
   'commitment.query',
   'management-briefing.read',
   'teams.readiness', 'teams.import.prepare',
@@ -1014,6 +1018,11 @@ export class MeetingIntelligencePlatform {
       this.recordings.putBytes(actor.tenantId, recording.id, bytes)
       recording.state = 'uploaded'; recording.progress = 20; recording.uploadedAt = this.clock.now().toISOString()
       this.recordings.save(recording)
+      // Retention counts from the first stored content and never restarts.
+      if (!meetingRecord.contentStartedAt) {
+        meetingRecord.contentStartedAt = recording.uploadedAt
+        this.meetings.save(meetingRecord)
+      }
       return view(recording)
     }, recordingId)
   }
@@ -1178,39 +1187,64 @@ export class MeetingIntelligencePlatform {
       const meetingRecord = this.#meeting(actor.tenantId, meetingId)
       invariant(meetingRecord.organizerId === actor.userId, 'DELETE_FORBIDDEN', 'Only organizer may delete development content', 403)
       invariant(meetingRecord.retentionState !== 'held', 'LEGAL_HOLD', 'Legal hold prevents deletion', 409)
-      const dispose = (transaction = null) => {
+      this.#disposeMeetingContent(meetingRecord)
+      return { state: 'deleted' }
+    })
+  }
+
+  // Deletes one meeting's content in every store it reaches: audio, transcript,
+  // knowledge, and derived commitments, then emits the content-free deletion
+  // event. Manual deletion and retention expiry share this one path.
+  #disposeMeetingContent(meetingRecord) {
+    const tenantId = meetingRecord.tenantId
+    const meetingId = meetingRecord.id
+    const dispose = (transaction = null) => {
         const meetings = transaction?.meetings ?? this.meetings
         const recordings = transaction?.recordings ?? this.recordings
         const knowledge = transaction?.knowledge ?? this.knowledge
         const commitments = transaction?.commitments ?? this.commitments
         meetingRecord.retentionState = 'deleted'
         meetings.save(meetingRecord)
-        const records = transaction ? recordings.listForMeeting(meetingId) : recordings.listForMeeting(actor.tenantId, meetingId)
+        const records = transaction ? recordings.listForMeeting(meetingId) : recordings.listForMeeting(tenantId, meetingId)
         for (const recording of records) {
           if (transaction) recordings.clearContent(recording.id)
-          else recordings.clearContent(actor.tenantId, recording.id)
+          else recordings.clearContent(tenantId, recording.id)
           recording.state = 'deleted'; recording.progress = 100; recordings.save(recording)
         }
         if (transaction) {
           knowledge.clearMeeting(meetingId)
           commitments.clearMeeting(meetingId)
         } else {
-          knowledge.clearMeeting(actor.tenantId, meetingId)
-          commitments.clearMeeting(actor.tenantId, meetingId)
+          knowledge.clearMeeting(tenantId, meetingId)
+          commitments.clearMeeting(tenantId, meetingId)
         }
         // Deletion is the sole event after disposition. It contains no content
         // counts, recording IDs, source IDs, or classification, so consumers
         // cannot infer deleted/never-record information from the outbox.
         this.#emitOutbox({
-          tenantId: actor.tenantId,
+          tenantId,
           type: 'meeting.content.deleted', aggregateType: 'meeting', aggregateId: meetingId,
           revision: 'deleted', payload: Object.freeze({ state: 'deleted' }),
         }, transaction)
       }
-      if (this.#tenantTransaction) this.#tenantTransaction(actor.tenantId, dispose)
+      if (this.#tenantTransaction) this.#tenantTransaction(tenantId, dispose)
       else dispose()
-      return { state: 'deleted' }
-    })
+  }
+
+  // Retention sweep for one tenant, run by the scheduler (never by a request).
+  // Expired content is already unreadable through policy; this makes the
+  // deletion real. Legal hold prevents it, and re-running is a no-op.
+  enforceRetention(tenantId, correlationId = randomUUID()) {
+    const actor = principal({ tenantId, userId: RETENTION_SERVICE_ID })
+    const now = this.clock.now()
+    const summary = { expired: 0, held: 0 }
+    for (const meetingRecord of this.meetings.list(tenantId)) {
+      if (meetingRecord.retentionState === 'deleted' || !this.policy.retentionExpired({ meeting: meetingRecord, now })) continue
+      if (meetingRecord.retentionState === 'held') { summary.held += 1; continue }
+      this.#audited(actor, correlationId, 'retention.expire', meetingRecord.id, () => this.#disposeMeetingContent(meetingRecord))
+      summary.expired += 1
+    }
+    return Object.freeze(summary)
   }
 
   appendTranscript(input, meetingId, authorization, items, correlationId = randomUUID()) {

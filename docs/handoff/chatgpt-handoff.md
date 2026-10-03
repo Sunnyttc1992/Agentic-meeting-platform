@@ -85,6 +85,10 @@ Suggested next work. Ask me which one; items 1–3 need my input:
    - The renderer is `server/meeting-export.js`. It escapes Markdown, HTML, and auto-links, and adds a confidentiality notice and the audit correlation ID.
    - The client helper is `src/meetingExport.js`. It is wired to the ledger's "Download meeting record" button and to the results screen.
    - Tests are in `server/export.test.js`.
-6. Next, recommended: retention expiry scheduler (PRIV-04), then API rate limits (AUTH-10). Neither needs my input.
+6. Done (Claude, 2026-10-03): retention expiry (PRIV-04).
+   - Rules are `PolicyEngine({ retentionPolicies })`. Use is blocked at expiry with `RETENTION_EXPIRED`.
+   - `enforceRetention(tenantId)` deletes expired content under `service:retention` through the shared `#disposeMeetingContent` path. Legal hold blocks it, and re-running does nothing.
+   - The local preview sweeps every minute. Tests are in `server/retention.test.js`. Details are in `docs/security/retention-deletion.md`.
+7. Next, recommended: API rate limits and request quotas (AUTH-10), especially on processing, retry, and export. It needs no input from me.
 
 Start by reading the files listed above. Run `npm test` to confirm a green baseline, then tell me what you plan to do before making large changes.

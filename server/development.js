@@ -12,6 +12,11 @@ import { RECORDING_MIME_TYPES, SPEECH_WAV_MIME_TYPE } from '../src/recordingForm
 // 16 kHz mono 16-bit WAV is 32 KB/s: 160 MB holds roughly 83 minutes.
 const LOCAL_MAX_RECORDING_BYTES = 160 * 1024 * 1024
 
+// Development tenants and their retention rules: meeting content is kept for
+// 30 days from its first upload, then the sweep deletes it.
+export const DEVELOPMENT_TENANTS = Object.freeze(['northstar'])
+const DEVELOPMENT_RETENTION_POLICIES = Object.freeze([{ tenantId: 'northstar', classification: '*', retainDays: 30 }])
+
 // Summaries are enabled only when Anthropic credentials are actually present,
 // so a missing key yields an honest "transcription only" result instead of a
 // failed recording. Keys come from the environment (or an `ant auth login`
@@ -36,7 +41,7 @@ export function createDevelopmentPlatform({ speechProcessor = createSpeechProces
   const storage = createInMemoryMeetingStorage()
   const platform = new MeetingIntelligencePlatform({
     storage, speechProcessor,
-    policy: new PolicyEngine(),
+    policy: new PolicyEngine({ retentionPolicies: DEVELOPMENT_RETENTION_POLICIES }),
     maxRecordingBytes: LOCAL_MAX_RECORDING_BYTES,
     // The real pipeline transcribes only verified 16 kHz mono WAV.
     acceptedMimeTypes: speechProcessor instanceof FakeSpeechProcessor ? RECORDING_MIME_TYPES : [SPEECH_WAV_MIME_TYPE],

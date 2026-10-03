@@ -2,7 +2,7 @@ import { createReadStream, existsSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { extname, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createDevelopmentPlatform } from './development.js'
+import { createDevelopmentPlatform, DEVELOPMENT_TENANTS } from './development.js'
 import { createHttpHandler } from './http.js'
 import { isLoopbackRequest, isMeetingApiPath, rejectNonLoopback } from './local-only.js'
 
@@ -63,7 +63,10 @@ function isEntrypoint() {
 
 if (isEntrypoint()) {
   const port = Number(process.env.PORT ?? 4173)
-  const server = createLocalPreviewServer()
+  const platform = createDevelopmentPlatform()
+  const server = createLocalPreviewServer({ platform })
+  // Retention sweep: expired content is already unreadable; this deletes it.
+  setInterval(() => { for (const tenantId of DEVELOPMENT_TENANTS) platform.enforceRetention(tenantId) }, 60_000).unref()
   server.listen(port, '127.0.0.1', () => {
     console.log(`Local preview with meeting API (this machine only): http://localhost:${port}`)
   })

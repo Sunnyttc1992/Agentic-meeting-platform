@@ -41,3 +41,18 @@ A deletion is complete only when all registered processors acknowledge deletion 
 ## Local prototype disposition behavior
 
 The in-memory speech pipeline re-checks current consent, policy version, classification/fingerprint, retention state, and organizer authorization both before processing and before publication. Any denial moves queued or processing work to `quarantined`, removes transcript/assertion candidates, and prevents status, search, and AI retrieval from returning derived content. Uploaded bytes remain only for active quarantine or legal-hold disposition; `pending-deletion`, `deletion-in-progress`, and `deleted` clear local bytes immediately.
+
+## Retention expiry (PRIV-04, milestone implementation)
+
+- **Rules.** `PolicyEngine({ retentionPolicies })` takes rules of the form `{ tenantId, classification, retainDays }`.
+  - `classification: '*'` is the tenant default; an exact classification rule wins over it.
+  - A tenant with no rule has no automatic expiry.
+  - A malformed rule (missing tenant or classification, or a non-positive or fractional day count) is rejected at startup with `INVALID_RETENTION_POLICY`. It is never silently treated as "keep forever" or "delete now".
+- **Clock.** Retention counts from `contentStartedAt`, the first upload for the meeting, which never restarts. Expiry is recomputed from the *current* rules on every check, so shortening a rule applies to existing content immediately.
+- **Expiry blocks use immediately.** From the expiry instant, `meetingAccess` and `recordingPreflight` deny with `RETENTION_EXPIRED`. That covers viewing, export, AI retrieval, commitments, and new capture, before any deletion has run. Queued processing is quarantined by the same check.
+- **Deletion.** `enforceRetention(tenantId)` is run by the scheduler under the tenant-scoped service identity `service:retention`, which is never accepted from a request.
+  - It deletes expired content through the same `#disposeMeetingContent` path as manual deletion: audio, transcript, knowledge, and derived commitments, followed by the content-free `meeting.content.deleted` outbox event.
+  - Each deletion is audited as `retention.expire`. Re-running is a no-op.
+  - Legal hold (`held`) prevents deletion and keeps blocking ordinary reads.
+- **Local schedule.** The local preview server sweeps its development tenants every minute. Standard meetings are kept 30 days.
+- **Still required for production:** a durable scheduler with missed-run catch-up and alerting, deletion acknowledgements from every downstream store (indexes, caches, backups, provider traces), and counsel-approved per-classification periods.

@@ -5,9 +5,18 @@ const deny = (code, reason) => ({ allowed: false, code, reason })
 const allow = (reason) => ({ allowed: true, reason })
 
 export class PolicyEngine {
-  constructor({ managementGrants = [], auditReaderGrants = [], sensitiveCategories = [], organizationSensitiveCategories = [], sensitiveRecordingAllows = [], knownClassifications = ['standard'] } = {}) {
+  constructor({ managementGrants = [], auditReaderGrants = [], retentionPolicies = [], sensitiveCategories = [], organizationSensitiveCategories = [], sensitiveRecordingAllows = [], knownClassifications = ['standard'] } = {}) {
     this.managementGrants = managementGrants
     this.auditReaderGrants = auditReaderGrants
+    // Retention rules are validated up front: a malformed rule is a deployment
+    // error, never a silent "keep forever" or "delete now".
+    for (const rule of retentionPolicies) {
+      if (typeof rule?.tenantId !== 'string' || !rule.tenantId || typeof rule.classification !== 'string' || !rule.classification
+        || !Number.isSafeInteger(rule.retainDays) || rule.retainDays <= 0) {
+        throw new DomainError('INVALID_RETENTION_POLICY', 'Retention rules need a tenant, a classification (or "*"), and a positive whole number of days', 500)
+      }
+    }
+    this.retentionPolicies = Object.freeze(retentionPolicies.map((rule) => Object.freeze({ ...rule })))
     this.sensitiveCategories = new Set([...sensitiveCategories, ...organizationSensitiveCategories])
     this.sensitiveRecordingAllows = sensitiveRecordingAllows
     this.knownClassifications = new Set(knownClassifications)
@@ -18,6 +27,7 @@ export class PolicyEngine {
     if (principal.userId !== meeting.organizerId) return deny('NOT_ORGANIZER', 'Only the organizer can authorize recording')
     if (NEVER_RECORD_CATEGORIES.has(meeting.classification)) return deny('NEVER_RECORD', 'Meeting classification prohibits recording')
     if (meeting.retentionState !== 'active') return deny('RETENTION_RESTRICTED', 'Meeting is not active')
+    if (this.retentionExpired({ meeting, now })) return deny('RETENTION_EXPIRED', 'Meeting content has reached its retention limit')
     const explicitAllow = this.sensitiveRecordingAllows.find((candidate) =>
       candidate.allowed === true && candidate.tenantId === meeting.tenantId && candidate.meetingId === meeting.id &&
       candidate.classification === meeting.classification && (!candidate.expiresAt || new Date(candidate.expiresAt) > now),
@@ -44,6 +54,7 @@ export class PolicyEngine {
   meetingAccess({ principal, meeting, now }) {
     if (principal.tenantId !== meeting.tenantId) return { ...deny('TENANT_MISMATCH', 'Meeting belongs to another tenant'), posture: 'denied' }
     if (meeting.retentionState !== 'active') return { ...deny('RETENTION_RESTRICTED', 'Meeting is not active'), posture: 'denied' }
+    if (this.retentionExpired({ meeting, now })) return { ...deny('RETENTION_EXPIRED', 'Meeting content has reached its retention limit'), posture: 'denied' }
     if (meeting.participantIds.includes(principal.userId)) return { ...allow('Principal participated in the meeting'), posture: 'participant' }
     const grant = this.managementGrants.find((candidate) =>
       candidate.tenantId === principal.tenantId &&
@@ -54,6 +65,22 @@ export class PolicyEngine {
     return grant
       ? { ...allow('Explicit management grant covers the meeting organizer'), posture: 'management-chain' }
       : { ...deny('MEETING_FORBIDDEN', 'Principal has no meeting access relationship'), posture: 'denied' }
+  }
+
+  // Retention is derived from the current rules every time it is checked, so
+  // shortening a rule applies to existing content immediately. It counts from
+  // the first stored content (the first uploaded recording).
+  retentionExpiresAt(meeting) {
+    const started = Date.parse(meeting?.contentStartedAt ?? '')
+    if (!Number.isFinite(started)) return null
+    const rule = this.retentionPolicies.find((candidate) => candidate.tenantId === meeting.tenantId && candidate.classification === meeting.classification)
+      ?? this.retentionPolicies.find((candidate) => candidate.tenantId === meeting.tenantId && candidate.classification === '*')
+    return rule ? new Date(started + rule.retainDays * 24 * 60 * 60 * 1000) : null
+  }
+
+  retentionExpired({ meeting, now }) {
+    const expiresAt = this.retentionExpiresAt(meeting)
+    return expiresAt !== null && now >= expiresAt
   }
 
   // Export is authorized separately from viewing: a participant may take a

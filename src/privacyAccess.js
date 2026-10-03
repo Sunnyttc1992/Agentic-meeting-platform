@@ -18,7 +18,7 @@ const RETENTION_STATES = new Set(["active", "pending-deletion", "deletion-in-pro
 const DELETION_STATES = new Set(["not-requested", "scheduled", "in-progress", "completed"])
 const AUDIT_ACTIONS = new Set([
   "meeting.create", "consent.record", "recording.preflight", "recording.create", "recording.upload",
-  "recording.process", "recording.process.retry", "recording.process.complete", "meeting.export", "recording.status", "recording.delete",
+  "recording.process", "recording.process.retry", "recording.process.complete", "meeting.export", "retention.expire", "recording.status", "recording.delete",
   "transcript.append", "knowledge.assertions.add", "knowledge.read", "knowledge.search",
   "ai.retrieve", "privacy-access.read",
 ])
@@ -30,6 +30,7 @@ const AUDIT_REASONS = new Set([
   "RECORDING_NOT_FOUND", "PROCESSOR_FAILED", "INVALID_RECORDING_LEASE", "LEASE_BINDING_MISMATCH",
   "RECORDING_LEASE_REVOKED", "RECORDING_LEASE_EXPIRED", "RECORDING_LEASE_REPLAYED",
   "RECORDING_AUTHORIZATION_EXPIRED", "LEGAL_HOLD", "DELETE_FORBIDDEN", "REDACTED",
+  "RETENTION_EXPIRED", "EXPORT_FORBIDDEN", "NO_MEETING_RECORD",
 ])
 
 export const privacyAccessHeaders = (correlationId = globalThis.crypto?.randomUUID?.() ?? "privacy-access-local") => ({
