@@ -23,3 +23,4 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
   - See `docs/architecture/self-hosted-postgres.md`. Do not switch to a cloud database service without the user's decision.
 - Delivery for now is a working end-to-end pipeline restricted to this machine (loopback only) until Microsoft Entra sign-in replaces the development identity headers. Do not expose the API on a LAN or deploy it before Entra exists.
 - Microsoft Teams is the first meeting-platform integration. Do not retain Zoom routes, UI, terminology, or claims. Keep the Teams connector explicitly unconnected until a production server-side Entra/OAuth application and secret-manager configuration exist.
+- The current self-hosted PostgreSQL operating target is Windows. Keep the delivery loopback-only until Microsoft Entra identity is implemented; durable database storage does not authorize wider access.
