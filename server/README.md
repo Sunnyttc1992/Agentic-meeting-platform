@@ -39,6 +39,7 @@ Meetings, consent, transcripts, action plans, and the audit trail are saved in `
 - **To start over,** stop the server and delete `.data/`.
 - **Interrupted jobs:** a job interrupted by a restart comes back as "Processing failed" with **Retry**.
 - **Other locations:** `MEETING_DATA_DIR` points the server at another folder. `npm run dev` uses `.data/vite-dev/`.
+- **Self-hosted PostgreSQL:** set `DATABASE_URL` and `MEETING_AUDIO_KEY_FILE` to use PostgreSQL instead of SQLite. Setup, roles, TLS, migrations (`npm run db:migrate`), and backups are in [docs/architecture/self-hosted-postgres.md](../docs/architecture/self-hosted-postgres.md).
 
 Recordings up to about 80 minutes are accepted. Data flow, controls, and the remaining blockers to wider delivery are documented in [docs/security/local-meeting-pipeline.md](../docs/security/local-meeting-pipeline.md).
 

@@ -315,14 +315,20 @@ export class InMemoryOutboxRepository {
 // use the in-memory adapter signatures; this layer adds the tenant binding and
 // record checks, so a durable backend inherits them rather than re-implementing
 // them.
+// Applies `next` to a repository result whether it arrived synchronously
+// (in-memory, SQLite) or as a promise (a database round trip), so tenant
+// checks run on the actual record, never on a pending promise.
+const settle = (value, next) => (value && typeof value.then === 'function' ? value.then(next) : next(value))
+
 function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxEnqueue = null } = {}) {
   const normalized = tenantScope(scope)
   const { tenantId } = normalized
-  const requireRecording = (recordingId) => {
-    const record = repositories.recordings.get(recordingId)
+  // Recording methods are keyed by ID; the tenant is passed as well, so a
+  // database backend can bind its row-level security context to it.
+  const withRecording = (recordingId, operation) => settle(repositories.recordings.get(recordingId, tenantId), (record) => {
     invariant(record && record.tenantId === tenantId, 'TENANT_SCOPE_VIOLATION', 'Recording must remain inside the active tenant scope', 403)
-    return record
-  }
+    return operation(record)
+  })
   const meetings = {
     get: (meetingId) => repositories.meetings.get(tenantId, meetingId),
     list: () => repositories.meetings.list(tenantId),
@@ -332,10 +338,7 @@ function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxE
     meetingIdsMatching: (query) => repositories.knowledge.meetingIdsMatching(tenantId, query),
   }
   const recordings = {
-    get: (recordingId) => {
-      const record = repositories.recordings.get(recordingId)
-      return record?.tenantId === tenantId ? record : null
-    },
+    get: (recordingId) => settle(repositories.recordings.get(recordingId, tenantId), (record) => (record?.tenantId === tenantId ? record : null)),
     listForMeeting: (meetingId) => repositories.recordings.listForMeeting(tenantId, meetingId),
   }
   const audit = {
@@ -365,22 +368,14 @@ function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxE
     knowledge.clearMeeting = (meetingId) => repositories.knowledge.clearMeeting(tenantId, meetingId)
     recordings.save = (record) => {
       assertTenantRecord(normalized, record, 'recording')
-      const existing = repositories.recordings.get(record.id)
-      invariant(!existing || existing.tenantId === tenantId, 'TENANT_SCOPE_VIOLATION', 'Recording must remain inside the active tenant scope', 403)
-      return repositories.recordings.save(record)
+      return settle(repositories.recordings.get(record.id, tenantId), (existing) => {
+        invariant(!existing || existing.tenantId === tenantId, 'TENANT_SCOPE_VIOLATION', 'Recording must remain inside the active tenant scope', 403)
+        return repositories.recordings.save(record)
+      })
     }
-    recordings.putBytes = (recordingId, bytes) => {
-      requireRecording(recordingId)
-      return repositories.recordings.putBytes(recordingId, bytes)
-    }
-    recordings.getBytes = (recordingId) => {
-      requireRecording(recordingId)
-      return repositories.recordings.getBytes(recordingId)
-    }
-    recordings.clearContent = (recordingId) => {
-      requireRecording(recordingId)
-      return repositories.recordings.clearContent(recordingId)
-    }
+    recordings.putBytes = (recordingId, bytes) => withRecording(recordingId, () => repositories.recordings.putBytes(recordingId, bytes, tenantId))
+    recordings.getBytes = (recordingId) => withRecording(recordingId, () => repositories.recordings.getBytes(recordingId, tenantId))
+    recordings.clearContent = (recordingId) => withRecording(recordingId, () => repositories.recordings.clearContent(recordingId, tenantId))
     audit.append = (event) => {
       assertTenantRecord(normalized, event, 'audit event')
       return repositories.audit.append(event)
@@ -429,7 +424,7 @@ export function composeRepositoryStorage({ kind, repositories, runAtomically, be
     scope: (scope) => scopedFacade(scope),
     transaction: (scope, operation) => {
       const normalized = tenantScope(scope)
-      return runAtomically(() => operation(scopedFacade(normalized, { writable: true })))
+      return runAtomically(() => operation(scopedFacade(normalized, { writable: true })), normalized)
     },
   })
 }

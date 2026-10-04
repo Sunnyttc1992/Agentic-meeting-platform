@@ -1,11 +1,11 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { sealAuditEvent } from '../audit.js'
 import { invariant } from '../errors.js'
 import { canonicalOutboxEvent, composeRepositoryStorage, createSerializedTransactionRunner, MEETING_LEDGER_DATA_MODEL_VERSION, tenantScope } from '../storage.js'
 import { commitmentMatchesQuery, deriveCommitmentRows } from './in-memory.js'
+import { AUDIO_KEY_VERSION, decryptAudio, encryptAudio, loadOrCreateAudioKey } from './audio-encryption.js'
 
 // Local durable storage: one SQLite file on this machine (node:sqlite, no
 // extra dependency). It implements the same repository signatures as the
@@ -19,7 +19,6 @@ import { commitmentMatchesQuery, deriveCommitmentRows } from './in-memory.js'
 // tenant and recording ID, so a blob cannot be moved onto another recording.
 // Transcripts and summaries are stored unencrypted in the database file, so
 // the machine itself must be protected (for example, with full-disk encryption).
-const AUDIO_KEY_VERSION = 1
 const AUDIO_KEY_FILE = `recording-audio-v${AUDIO_KEY_VERSION}.key`
 
 const SCHEMA = `
@@ -43,22 +42,6 @@ const parse = (row) => (row ? JSON.parse(row.doc) : null)
 const parseAll = (rows) => rows.map((row) => JSON.parse(row.doc))
 const restrictToOwner = (path) => { try { chmodSync(path, 0o600) } catch { /* best effort; Windows uses ACLs */ } }
 
-function loadOrCreateAudioKey(keyDirectory) {
-  const keyFile = join(keyDirectory, AUDIO_KEY_FILE)
-  if (!existsSync(keyFile)) {
-    mkdirSync(keyDirectory, { recursive: true })
-    try {
-      writeFileSync(keyFile, randomBytes(32), { flag: 'wx', mode: 0o600 })
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error
-    }
-  }
-  restrictToOwner(keyFile)
-  const key = readFileSync(keyFile)
-  invariant(key.length === 32, 'INVALID_STORAGE_KEY', 'The recording audio key file is not a 256-bit key', 500)
-  return key
-}
-
 export function openLocalDurableStorage({ directory, databaseFile = 'meeting-ledger.sqlite' } = {}) {
   invariant(typeof directory === 'string' && directory.length > 0, 'INVALID_STORAGE_ADAPTER', 'A data directory is required')
   mkdirSync(directory, { recursive: true })
@@ -72,13 +55,12 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
     const version = db.prepare('SELECT value FROM schema_meta WHERE key = ?').get('data_model_version')?.value
     if (!version) db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run('data_model_version', MEETING_LEDGER_DATA_MODEL_VERSION)
     invariant(!version || version === MEETING_LEDGER_DATA_MODEL_VERSION, 'UNSUPPORTED_STORAGE_MODEL', 'The local database was written by an unsupported data model version', 500)
-    audioKey = loadOrCreateAudioKey(join(directory, 'keys'))
+    audioKey = loadOrCreateAudioKey(join(directory, 'keys', AUDIO_KEY_FILE))
   } catch (error) {
     // Never leave a refused database open (on Windows that also locks the file).
     db.close()
     throw error
   }
-  const audioAad = (tenantId, recordingId) => Buffer.from(`${MEETING_LEDGER_DATA_MODEL_VERSION}:${tenantId}:${recordingId}`)
 
   const sql = (text) => db.prepare(text)
   const meetings = {
@@ -123,28 +105,15 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
     putBytes(id, bytes) {
       const row = sql('SELECT tenant_id FROM recordings WHERE id = ?').get(id)
       if (!row) return false
-      const nonce = randomBytes(12)
-      const cipher = createCipheriv('aes-256-gcm', audioKey, nonce)
-      cipher.setAAD(audioAad(row.tenant_id, id))
-      const ciphertext = Buffer.concat([cipher.update(Buffer.from(bytes)), cipher.final()])
+      const sealed = encryptAudio(audioKey, row.tenant_id, id, bytes)
       sql('INSERT INTO recording_content (recording_id, key_version, nonce, tag, ciphertext) VALUES (?, ?, ?, ?, ?) ON CONFLICT (recording_id) DO UPDATE SET key_version = excluded.key_version, nonce = excluded.nonce, tag = excluded.tag, ciphertext = excluded.ciphertext')
-        .run(id, AUDIO_KEY_VERSION, nonce, cipher.getAuthTag(), ciphertext)
+        .run(id, sealed.keyVersion, sealed.nonce, sealed.tag, sealed.ciphertext)
       return true
     },
     getBytes(id) {
       const row = sql('SELECT r.tenant_id, c.key_version, c.nonce, c.tag, c.ciphertext FROM recording_content c JOIN recordings r ON r.id = c.recording_id WHERE c.recording_id = ?').get(id)
       if (!row) return null
-      invariant(row.key_version === AUDIO_KEY_VERSION, 'RECORDING_CONTENT_UNAVAILABLE', 'Recording audio was encrypted with an unavailable key', 409)
-      try {
-        const decipher = createDecipheriv('aes-256-gcm', audioKey, Buffer.from(row.nonce))
-        decipher.setAAD(audioAad(row.tenant_id, id))
-        decipher.setAuthTag(Buffer.from(row.tag))
-        return Buffer.concat([decipher.update(Buffer.from(row.ciphertext)), decipher.final()])
-      } catch {
-        // A wrong key or any altered byte fails authentication: never return
-        // partially decrypted or tampered audio.
-        invariant(false, 'RECORDING_CONTENT_UNAVAILABLE', 'Recording audio failed its integrity check', 409)
-      }
+      return decryptAudio(audioKey, row.tenant_id, id, { keyVersion: row.key_version, nonce: row.nonce, tag: row.tag, ciphertext: row.ciphertext })
     },
     clearContent(id) {
       sql('DELETE FROM recording_content WHERE recording_id = ?').run(id)

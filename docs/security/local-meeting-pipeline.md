@@ -48,7 +48,9 @@ Status: working end to end on one machine. It is not yet deployable to other use
 ## What still blocks wider delivery
 
 1. **Identity:** Microsoft Entra sign-in must replace the `x-tenant-id` / `x-user-id` development headers. Until then the API must stay loopback-only.
-2. **Production storage:** local data is now durable (see "Local durable storage" below), but it lives in one SQLite file on one machine. Shared, backed-up production storage still needs the PostgreSQL, object storage, and KMS adapter described in `docs/architecture/durable-storage-foundation.md`.
+2. **Production storage:** self-hosted PostgreSQL is implemented and tested (see `docs/architecture/self-hosted-postgres.md`): tenant row-level security in the database, a least-privilege role check, an append-only audit table, and encrypted audio. Still open:
+   - operating it: backups, monitoring, high availability, and key rotation,
+   - a managed key service if the deployment requires one.
 3. **Data processing terms:** confirm that the Anthropic organization's data-retention and processing terms are acceptable for meeting transcripts before real meetings are processed.
 4. **Speaker identification:** owners come only from names stated in the meeting. Diarization and verified speaker binding are not implemented.
 5. **Export lifecycle:** a downloaded file cannot be recalled. Revocation and deletion stop future exports but cannot reach copies already saved; expiring share links are not implemented.

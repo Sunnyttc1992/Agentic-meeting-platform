@@ -38,6 +38,18 @@ The prototype validates this shape and tenant-local replay behavior with its sea
 - Its `runAtomically` is a real SQLite transaction (`BEGIN IMMEDIATE`, with savepoints for nested calls).
 - It is not the production target. It is one file on one machine, with no RLS, replication, or KMS.
 
+## Self-hosted PostgreSQL adapter
+
+`server/adapters/postgres.js` with `server/adapters/postgres-schema.js` implements this seam on PostgreSQL. The operator runbook is [self-hosted-postgres.md](self-hosted-postgres.md).
+
+- **Shared logic.** It is composed through `composeRepositoryStorage`, so it shares the tenant facade, commitment derivation, and outbox canonicalization.
+- **Transactions.** Each holds one pooled connection and sets the transaction-local `app.tenant_id`. Nested calls use savepoints, and requests run concurrently with database isolation.
+- **Tenant isolation, twice.** Every query filters on `tenant_id`, and forced row-level security enforces the same rule for the application role.
+- **Audit.** Appends take a per-tenant advisory lock, so sequence numbers stay contiguous under concurrency. Triggers make the table append-only even for its owner.
+- **Startup refusals.** The server refuses an unmigrated or newer schema, and refuses to connect as a superuser, a `BYPASSRLS` role, or the table owner.
+
+The platform core is asynchronous for this adapter. Transactions run through `createSerializedTransactionRunner` (in-memory and SQLite) or real database transactions (PostgreSQL).
+
 ## Production adapter seam
 
 A production `MeetingStorage` implementation is registered with `createMeetingStorageBundle({ scope, transaction })`, with `dataModelVersion: 'meeting-ledger-v1'`. The public bundle has exactly four fields: `kind`, `dataModelVersion`, `scope`, and `transaction`; it never exposes raw `meetings`, `knowledge`, `recordings`, `audit`, `commitments`, or `outbox` repositories. The composition root mints every callback/read capability through `createTenantStorageFacade(scope, capabilities, { writable })`.

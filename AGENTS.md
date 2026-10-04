@@ -15,5 +15,11 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - Speech-to-text is local Whisper running on our own server (2026-10-03): meeting audio never leaves the machine. Do not switch to a cloud speech service without the user's explicit decision.
 - The summary, decisions, risks, questions, and action plan are written by Claude through the Anthropic API (2026-10-03). Only transcript text, participant IDs, and the meeting date are sent; credentials stay server-side and never reach the browser.
 - Local storage is durable (2026-10-03): meetings, consent, transcripts, action plans, and audit persist in a SQLite file in the Git-ignored `.data/` folder (built-in `node:sqlite`). Recording audio is encrypted with AES-256-GCM using a generated key file in `.data/keys/`. Never commit `.data/`. Production still moves to PostgreSQL, object storage, and KMS.
+- Production storage is self-hosted PostgreSQL (2026-10-03), selected by `DATABASE_URL`.
+  - The server connects as a least-privilege role (never a superuser, a `BYPASSRLS` role, or the table owner).
+  - Row-level security per tenant is enforced by the database.
+  - Recording audio is AES-256-GCM encrypted with an operator-supplied key file (`MEETING_AUDIO_KEY_FILE`).
+  - Migrations run only through `npm run db:migrate` as the owner.
+  - See `docs/architecture/self-hosted-postgres.md`. Do not switch to a cloud database service without the user's decision.
 - Delivery for now is a working end-to-end pipeline restricted to this machine (loopback only) until Microsoft Entra sign-in replaces the development identity headers. Do not expose the API on a LAN or deploy it before Entra exists.
 - Microsoft Teams is the first meeting-platform integration. Do not retain Zoom routes, UI, terminology, or claims. Keep the Teams connector explicitly unconnected until a production server-side Entra/OAuth application and secret-manager configuration exist.

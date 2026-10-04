@@ -99,6 +99,12 @@ Suggested next work. Ask me which one; items 1–3 need my input:
    - Both backends share `composeRepositoryStorage` in `storage.js`.
    - `recoverInterruptedProcessing` runs at startup. The demo meeting is seeded only once. The Vite dev server opens `.data/vite-dev/` lazily.
    - Tests are in `server/durable-storage.test.js`.
-9. Every remaining roadmap item needs a decision from me: Entra sign-in, production PostgreSQL/KMS hosting, Anthropic data terms, or speaker diarization. Ask before starting any of them.
+9. Done (Claude, 2026-10-03; user chose self-hosted PostgreSQL, built and tested now).
+   - **Async core.** The platform core is now async; storage transactions may be async and are serialized for in-memory and SQLite.
+   - **Adapter.** `server/adapters/postgres.js` and `postgres-schema.js` provide forced per-tenant RLS, a least-privilege role check at startup, an append-only audit trail with an advisory-locked sequence, AES-GCM audio in `bytea`, and versioned migrations (`npm run db:migrate`).
+   - **Configuration.** `DATABASE_URL` plus `MEETING_AUDIO_KEY_FILE` select PostgreSQL in `server/storage-config.js`; otherwise SQLite.
+   - **Tests.** `server/postgres-storage.test.js` runs on PGlite (real Postgres in WASM) as a non-owner role, and drives the real `pg` driver over the wire through `@electric-sql/pglite-socket`.
+   - **Runbook.** `docs/architecture/self-hosted-postgres.md`.
+10. Every remaining roadmap item needs a decision from me: Entra sign-in, Anthropic data terms, speaker diarization, or operating the database (backups, monitoring, key rotation). Ask before starting any of them.
 
 Start by reading the files listed above. Run `npm test` to confirm a green baseline, then tell me what you plan to do before making large changes.
