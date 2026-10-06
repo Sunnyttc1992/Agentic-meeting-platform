@@ -61,6 +61,41 @@ const granted = (actor, overrides = {}) => ({
   policyVersion: 'v1', decision: 'granted', method: 'explicit', ...overrides,
 })
 
+test('local meeting creation is tenant-bound, validates input, and lists only participant records', async () => {
+  await withServer({}, async ({ base, audit }) => {
+    const before = await get(base, '/meetings', organizer, 'meeting-list-before')
+    assert.equal(before.response.status, 200)
+    assert.deepEqual(before.body.meetings, [])
+
+    const created = await post(base, '/meetings', organizer, {
+      title: '  Visa  ', participantIds: ['sunny', 'anyarin', 'sunny'], classification: 'standard',
+    }, 'meeting-create')
+    assert.equal(created.response.status, 201)
+    assert.equal(created.body.meeting.title, 'Visa')
+    assert.equal(created.body.meeting.organizerId, organizer.userId)
+    assert.deepEqual(created.body.meeting.participantIds, ['alex', 'sunny', 'anyarin'])
+    assert.match(created.body.meeting.id, /^[0-9a-f-]{36}$/)
+
+    const participantView = await get(base, '/meetings', { tenantId: tenant, userId: 'sunny' }, 'meeting-list-participant')
+    assert.equal(participantView.response.status, 200)
+    assert.deepEqual(participantView.body.meetings.map((meeting) => meeting.id), [created.body.meeting.id])
+    const outsiderView = await get(base, '/meetings', { tenantId: tenant, userId: 'outsider' }, 'meeting-list-outsider')
+    assert.equal(outsiderView.response.status, 200)
+    assert.deepEqual(outsiderView.body.meetings, [])
+
+    const invalid = await post(base, '/meetings', organizer, {
+      title: 'Attempt to impersonate', participantIds: [], classification: 'standard', tenantId: 'other',
+    }, 'meeting-create-invalid')
+    assert.equal(invalid.response.status, 400)
+    assert.equal(invalid.body.error.code, 'INVALID_REQUEST')
+    const events = audit.all().filter((event) => event.correlationId === 'meeting-create')
+    assert.equal(events.length, 1)
+    assert.equal(events[0].action, 'meeting.create')
+    assert.equal(events[0].tenantId, tenant)
+    assert.equal(events[0].principalId, organizer.userId)
+  })
+})
+
 async function consentAll(base) {
   for (const actor of [organizer, participant]) {
     const result = await post(base, '/meetings/meeting-1/consent', actor, granted(actor), `consent-${actor.userId}`)

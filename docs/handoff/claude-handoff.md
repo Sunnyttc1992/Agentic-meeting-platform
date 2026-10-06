@@ -5,7 +5,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 ## Project and checkpoint
 
 - Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
-- Latest code checkpoint: `9a6a37d Normalize timestamps in prototype export` (feature delivery began at `5390d5a`).
+- Latest code checkpoint: `f1635a4 Replace seeded meeting demo with local workspace` (feature delivery began at `5390d5a`).
 - The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
 - Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
@@ -37,10 +37,11 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 13. Production launch is explicitly gated in `docs/operations/production-launch-gate.md`; it lists the Windows, Entra, Teams, provider-approval, and release-evidence conditions that require organization action.
 14. Per-computer prototype distribution: `npm run prototype:export` creates a reviewed-source ZIP and SHA-256 sidecar without secrets, data, caches, build output, dependencies, or Git history. Each recipient runs `scripts/install-local-prototype.ps1`, which installs pinned dependencies, invokes the existing PostgreSQL setup wizard only when needed, and builds the bundle. `scripts/start-local-prototype.ps1` starts the resulting instance only at `localhost`/`127.0.0.1`. See `docs/operations/local-prototype-distribution.md`.
     - The exporter packages only tracked files, refuses a dirty tracked release, and normalizes timestamps in its disposable staging directory for Windows `Compress-Archive` compatibility.
+15. The browser no longer starts in a seeded scenario. `LocalMeetingWorkspace` creates and lists durable local meetings through same-origin `POST`/`GET /meetings`, then opens the selected real record in the recording studio. The server derives tenant and organizer from the local development identity, validates the bounded create payload, filters the list to active participant records, and keeps meeting-list audit events content-free. The legacy no-title `meeting-1` record is hidden rather than deleted.
 
 ## Validation at this checkpoint
 
-- `npm test`: **200/200 passing**.
+- `npm test`: **201/201 passing**.
 - `npm run build`: passed.
 - `npm run test:sites`: **4/4 passing**.
 - Parsed all three new PowerShell scripts and ran `bash -n scripts/setup-windows-postgres.sh`.
@@ -49,6 +50,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 - `git diff --check`: passed before committing `341808e`.
 - Earlier validation also passed `python -m py_compile server/diarize_worker.py` and `bash -n scripts/setup-windows-diarization.sh`.
 - A prior synthetic two-voice local run completed Whisper, pyannote, and OpenAI end to end; labels were anonymous and the diarization temp directory was empty afterward.
+- The local preview was restarted at `http://localhost:4173`. An exact replay of the browser's `Visa` create request with `Sunny, Anyarin` returned `201 Created`; the first browser error was consistent with submission during the server restart. Refresh once before retrying rather than creating duplicate records.
 
 ## Current machine facts (do not expose values)
 
@@ -78,7 +80,6 @@ These require a user or organization decision first:
 - approval to use a real meeting with an external summary provider;
 - Microsoft Entra rollout, then Teams connection;
 - a reviewed, reversible, audited speaker-correction/mapping interface;
-- dashboard wiring for the current static Q4 demo, because it needs explicit visual/product direction;
 - whether both LLM providers should remain supported.
 
 ## Non-negotiable implementation rules
