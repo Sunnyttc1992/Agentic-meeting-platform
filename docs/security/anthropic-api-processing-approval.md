@@ -20,6 +20,7 @@ The application must remain in transcript-only mode for real meetings unless the
 | Sent to Anthropic | Never sent by this integration |
 | --- | --- |
 | Timestamped transcript text | Audio or audio bytes |
+| Anonymous per-meeting speaker labels (`SPEAKER_00`, ...), added 2026-10-06 | Voice embeddings, voiceprints, or raw diarization worker labels |
 | Transcript segment IDs and offsets | Participant names |
 | Participant IDs | Tenant, Meeting, Recording, or lease IDs |
 | Meeting date | Consent evidence, encryption keys, credentials, audit records, or other Meetings |

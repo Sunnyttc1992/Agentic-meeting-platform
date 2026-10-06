@@ -110,6 +110,12 @@ const PROCESSOR_COPY = {
   "local-whisper-transcript-only": { label: "LOCAL WHISPER" },
 }
 const participantName = (id) => participants.find((person) => person.id === id)?.name ?? id
+// An owner is shown only when the meeting named a participant; otherwise the
+// anonymous label of the speaker who took the task on, marked unverified.
+const actionOwner = (commitment) => commitment?.ownerId
+  ? participantName(commitment.ownerId)
+  : commitment?.speakerLabel ? `${commitment.speakerLabel} · unverified` : "Unassigned"
+const AGREEMENT_LABELS = { committed: "Committed", proposed: "Proposed" }
 const dueDate = (iso) => iso ? new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }) : "Not stated"
 
 // Every generated item shows the transcript moments it cites. Items the
@@ -135,10 +141,10 @@ export function MeetingIntelligenceResult({ result, onDownload = null }) {
     {summary && <section className="intelligence-summary"><span>Executive summary</span><p>{summary.text}</p><small>Sources {sources(summary.citations)}</small></section>}
     {actions.length > 0 && <section className="action-plan"><span>Action plan</span>
       <div className="action-plan-table" role="table" aria-label="Action plan">
-        <div role="row" className="action-plan-head"><span role="columnheader">Action</span><span role="columnheader">Owner</span><span role="columnheader">Due</span><span role="columnheader">Source</span></div>
-        {actions.map((action) => <div role="row" key={action.id}><b role="cell">{action.text}</b><span role="cell">{action.commitment?.ownerId ? participantName(action.commitment.ownerId) : "Unassigned"}</span><span role="cell">{dueDate(action.commitment?.deadline)}</span><small role="cell">{sources(action.citations)}</small></div>)}
+        <div role="row" className="action-plan-head"><span role="columnheader">Action</span><span role="columnheader">Status</span><span role="columnheader">Owner</span><span role="columnheader">Due</span><span role="columnheader">Source</span></div>
+        {actions.map((action) => <div role="row" key={action.id}><b role="cell">{action.text}</b><span role="cell" className={`action-agreement ${action.commitment?.agreement ?? "unrecorded"}`}>{AGREEMENT_LABELS[action.commitment?.agreement] ?? "Not recorded"}</span><span role="cell">{actionOwner(action.commitment)}</span><span role="cell">{dueDate(action.commitment?.deadline)}</span><small role="cell">{sources(action.citations)}</small></div>)}
       </div>
-      <small className="action-plan-note">Owners and due dates appear only when they were stated in the meeting; speakers are not identified.</small>
+      <small className="action-plan-note">Committed means someone agreed to the task; proposed means it was suggested but nobody took it on. Owners and due dates appear only when stated in the meeting. Speaker labels are anonymous and unverified.</small>
     </section>}
     {[["decision", "Decisions"], ["risk", "Risks & blockers"], ["question", "Open questions"], ["finding", "Findings"]].map(([kind, title]) => ofKind(kind).length > 0 && <div className="assertion-list" key={kind}>{ofKind(kind).map((assertion) => <article key={assertion.id}><span>{title}</span><b>{assertion.text}</b><small>Sources {sources(assertion.citations)}</small></article>)}</div>)}
     {segments.length > 0 && <details className="transcript-details" open={assertions.length === 0}><summary>Transcript · {segments.length} segments</summary><div className="speaker-timeline">{segments.map((segment) => <article key={segment.id}><time>{displayTime(Math.floor(segment.startMs / 1000))}</time><div><b>{segment.diarizationLabel === "UNATTRIBUTED" ? "Speaker not identified" : `${segment.diarizationLabel} · ${segment.verifiedParticipantId ?? "Unverified speaker"}`}</b>{Number.isFinite(segment.identityConfidence) && <small>Identity confidence {Math.round(segment.identityConfidence * 100)}% · {segment.provenance.mode}</small>}<p>{segment.text}</p></div></article>)}</div></details>}
@@ -372,7 +378,7 @@ export function RecordingStudio({ onBack }) {
     let blob=captureRef.current.blob(); if(!blob||!state.leaseId)return
     const transcribes = state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE)
     if(!window.confirm(transcribes
-      ? "Transcribe this recording?\n\nThe audio is converted and transcribed on this machine and is never sent elsewhere. If summaries are configured, the transcript text (not the audio) is sent to Anthropic's Claude API to write the summary and action plan."
+      ? "Transcribe this recording?\n\nThe audio is converted and transcribed on this machine and is never sent elsewhere. If summaries are configured, the transcript text with anonymous speaker labels (not the audio or any voice data) is sent to Anthropic's Claude API to write the summary and action plan."
       : "Upload this in-memory recording to the local development processor?"))return
     dispatch({type:"PROCESS_CONFIRM"})
     try {
@@ -428,7 +434,7 @@ export function RecordingStudio({ onBack }) {
         <p className="eyebrow">TRUST CONTROLS</p>
         <dl><div><dt>Meeting policy</dt><dd><ShieldCheck /> Preflight enforced</dd></div><div><dt>{mockMode ? "Capture source" : "Microphone"}</dt><dd><Microphone aria-hidden="true" /> {mockMode ? "Synthetic fixture · no microphone/audio" : streamRef.current ? "Connected" : "Not active"}</dd></div><div><dt>Authorization lease</dt><dd>{state.authorizationExpiresAt ? `${displayTime(remaining)} remaining` : "Not issued"}</dd></div><div><dt>Storage</dt><dd>{mockMode ? "No audio retained" : "In-memory only"}</dd></div></dl>
         {state.phase === "recording" && <div className="withdraw-box"><b>Consent changed?</b><p>Any participant can withdraw. Capture stops immediately and audio is cleared.</p>{participants.map((person) => <button key={person.id} onClick={() => setConsent(person.id, "withdrawn")}>Withdraw for {person.name}</button>)}</div>}
-        <small>{state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "Audio is transcribed on this machine by Whisper and never leaves it. When configured, only the transcript text is sent to Claude to write the cited summary and action plan." : "Local deterministic processor is a clearly labeled fake. It demonstrates provenance, identity confidence, and citations; it does not claim real STT or diarization."}</small>
+        <small>{state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "Audio is transcribed on this machine by Whisper and never leaves it. When configured, only the transcript text and anonymous speaker labels are sent to Claude to write the cited summary and action plan." : "Local deterministic processor is a clearly labeled fake. It demonstrates provenance, identity confidence, and citations; it does not claim real STT or diarization."}</small>
       </aside>
     </section>
   </main>

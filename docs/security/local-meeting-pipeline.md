@@ -11,7 +11,7 @@ Status: working end to end on one machine. It is not yet deployable to other use
 | Conversion to 16 kHz mono WAV | Browser tab | Nothing |
 | Upload, hash, and WAV verification | Server (loopback only) | Audio moves from the tab to the local server process |
 | Transcription (Whisper, ONNX) | Server process | Nothing. The only network access is the one-time model weight download into `.cache/models` |
-| Summary, decisions, risks, questions, action plan | Anthropic API (Claude) | Transcript text, the meeting's participant IDs, and the meeting date. Never audio, names, tenant, meeting, recording, or lease identifiers |
+| Summary, decisions, risks, questions, action plan | Anthropic API (Claude) | Transcript text with anonymous per-meeting speaker labels (`SPEAKER_00`, ...), the meeting's participant IDs, and the meeting date. Never audio, voice data, names, tenant, meeting, recording, or lease identifiers |
 | Validation and storage | Server | Nothing |
 
 ## Controls

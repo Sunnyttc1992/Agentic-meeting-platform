@@ -21,6 +21,7 @@ const timestamp = (ms) => {
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
 }
 
+const AGREEMENT_LABELS = Object.freeze({ committed: 'Committed', proposed: 'Proposed' })
 const SECTIONS = Object.freeze([
   ['decision', 'Decisions'],
   ['risk', 'Risks and blockers'],
@@ -48,7 +49,7 @@ export function renderMeetingRecordMarkdown({ meeting, segments = [], assertions
     `- Classification: ${escapeMarkdownText(meeting.classification)}`,
     `- Participants: ${meeting.participantIds.map(escapeMarkdownText).join(', ')}`,
     `- Processed by: ${escapeMarkdownText(processor ?? 'Not recorded')}`,
-    '- Speakers are not identified. Owners and due dates appear only where they were stated in the meeting.',
+    '- Speakers are not identified; speaker labels are anonymous and unverified. Owners and due dates appear only where they were stated in the meeting.',
     '',
   ]
 
@@ -57,10 +58,13 @@ export function renderMeetingRecordMarkdown({ meeting, segments = [], assertions
 
   const actions = ofKind('action')
   if (actions.length) {
-    lines.push('## Action plan', '', '| Action | Owner | Due | Sources |', '| --- | --- | --- | --- |')
+    lines.push('## Action plan', '', '| Action | Status | Owner | Due | Sources |', '| --- | --- | --- | --- | --- |')
     for (const action of actions) {
-      const due = action.commitment?.deadline ? action.commitment.deadline.slice(0, 10) : 'Not stated'
-      lines.push(`| ${escapeMarkdownText(action.text)} | ${escapeMarkdownText(action.commitment?.ownerId ?? 'Unassigned')} | ${escapeMarkdownText(due)} | ${sources(action.citations)} |`)
+      const commitment = action.commitment ?? {}
+      const due = commitment.deadline ? commitment.deadline.slice(0, 10) : 'Not stated'
+      const status = AGREEMENT_LABELS[commitment.agreement] ?? 'Not recorded'
+      const owner = commitment.ownerId ?? (commitment.speakerLabel ? `${commitment.speakerLabel} (unverified)` : 'Unassigned')
+      lines.push(`| ${escapeMarkdownText(action.text)} | ${status} | ${escapeMarkdownText(owner)} | ${escapeMarkdownText(due)} | ${sources(action.citations)} |`)
     }
     lines.push('')
   }

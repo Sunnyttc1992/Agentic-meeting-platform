@@ -85,8 +85,8 @@ const HOSTILE_RESPONSE = {
   risks: [{ text: 'Security review may delay January.', citations: ['S1'] }],
   open_questions: [],
   action_plan: [
-    { action: 'Send the security findings.', owner_participant_id: 'sam', due_date: '2026-10-20', citations: ['S2'] },
-    { action: 'Do everything.', owner_participant_id: 'mallory', due_date: '2026-02-30', citations: ['S3'] },
+    { action: 'Send the security findings.', status: 'committed', owner_participant_id: 'sam', speaker_label: 'SPEAKER_07', due_date: '2026-10-20', citations: ['S2'] },
+    { action: 'Do everything.', status: 'approved', owner_participant_id: 'mallory', speaker_label: 'mallory', due_date: '2026-02-30', citations: ['S3'] },
   ],
 }
 
@@ -131,7 +131,7 @@ test('Claude receives only the transcript, participant IDs, and date, and hostil
   assert.deepEqual(request.betas, ['server-side-fallback-2026-07-01'])
   assert.equal(request.output_config.format.type, 'json_schema')
   const sent = JSON.stringify(request)
-  assert.match(sent, /\[S2 00:04-00:09\] Sam, send the security findings by October 20\./)
+  assert.match(sent, /\[S2 00:04-00:09 unattributed\] Sam, send the security findings by October 20\./, 'segments without a speaker label are marked unattributed')
   assert.match(sent, /Participant IDs: alex, sam/)
   assert.match(sent, /Meeting date: 2026-10-03/)
   assert.doesNotMatch(sent, /northstar|meeting-1|recording-|lease|sha256/, 'no tenant, meeting, recording, or integrity identifiers leave the server')
@@ -145,8 +145,8 @@ test('Claude receives only the transcript, participant IDs, and date, and hostil
   assert.equal(byKind('summary').length, 1)
   assert.deepEqual(byKind('decision').map((item) => item.text), ['Keep the phased rollout.'])
   const [send, everything] = byKind('action')
-  assert.deepEqual(send.commitment, { ownerId: 'sam', deadline: '2026-10-20T00:00:00.000Z', status: 'open' })
-  assert.deepEqual(everything.commitment, { ownerId: null, deadline: null, status: 'open' }, 'a non-participant owner and an impossible date stay unknown')
+  assert.deepEqual(send.commitment, { ownerId: 'sam', deadline: '2026-10-20T00:00:00.000Z', status: 'open', agreement: 'committed' }, 'a speaker label absent from the transcript is dropped')
+  assert.deepEqual(everything.commitment, { ownerId: null, deadline: null, status: 'open', agreement: 'proposed' }, 'a non-participant owner, an impossible date, an unknown status, and a non-label speaker stay unknown')
   const segmentIds = new Set(status.segments.map((segment) => segment.id))
   assert.ok(status.assertions.every((assertion) => assertion.citations.every((id) => segmentIds.has(id))))
 
@@ -154,6 +154,49 @@ test('Claude receives only the transcript, participant IDs, and date, and hostil
   assert.equal(commitments.length, 2)
   assert.equal(commitments.find((item) => item.ownerId === 'sam')?.deadline, '2026-10-20T00:00:00.000Z')
   assert.doesNotMatch(JSON.stringify(state.audit.all()), /security findings|phased rollout|mallory/, 'audit stays content-free')
+})
+
+test('Claude sees anonymous speaker labels, and the action plan keeps only labels, statuses, and items it can support', async () => {
+  const claude = fakeClaude({
+    summary: { text: 'The vendor review is due Friday.', citations: ['S1'] },
+    decisions: [{ text: 'Finalize the vendor review.', citations: ['S1'] }, { text: 'finalize the vendor review', citations: ['S2'] }],
+    risks: [],
+    open_questions: [],
+    action_plan: [
+      { action: 'Prepare the cost comparison.', status: 'committed', owner_participant_id: '', speaker_label: 'SPEAKER_01', due_date: '2026-10-08', citations: ['S2'] },
+      { action: 'Prepare the cost comparison', status: 'committed', owner_participant_id: '', speaker_label: 'SPEAKER_01', due_date: '2026-10-08', citations: ['S3'] },
+      { action: 'Schedule a check-in.', status: 'proposed', owner_participant_id: '', speaker_label: 'SPEAKER_09', due_date: '', citations: ['S3'] },
+    ],
+  })
+  const processor = new LocalMeetingProcessor({
+    transcriber: { transcribe: async () => [
+      { startMs: 0, endMs: 4000, text: 'We need the vendor review by Friday.' },
+      { startMs: 4000, endMs: 8000, text: 'Agreed. I will prepare the cost comparison.' },
+      { startMs: 8000, endMs: 12000, text: 'Let us schedule a check-in.' },
+    ] },
+    diarizer: { enabled: true, diarize: async () => [
+      { startMs: 0, endMs: 4000, label: 'pyannote_7' },
+      { startMs: 4000, endMs: 8000, label: 'pyannote_2' },
+      { startMs: 8000, endMs: 12000, label: 'pyannote_7' },
+    ] },
+    intelligence: new ClaudeMeetingIntelligence({ client: claude.client }),
+    now: () => new Date('2026-10-03T12:00:00Z'),
+  })
+  const result = await processor.process({ bytes: Buffer.from(encodeWavPcm16(tone(12))), participantIds: ['alex', 'sam'] })
+
+  const sent = claude.requests[0].messages[0].content
+  assert.match(sent, /\[S1 00:00-00:04 SPEAKER_00\] We need/, 'labels are renumbered by first appearance')
+  assert.match(sent, /\[S2 00:04-00:08 SPEAKER_01\] Agreed/)
+  assert.match(sent, /\[S3 00:08-00:12 SPEAKER_00\] Let us/)
+  assert.doesNotMatch(sent, /pyannote/, 'raw worker labels never leave the server')
+
+  const decisions = result.assertions.filter((item) => item.kind === 'decision')
+  assert.deepEqual(decisions.map((item) => [item.text, item.citations]), [['Finalize the vendor review.', ['S1', 'S2']]], 'repeated items merge their citations')
+  const actions = result.assertions.filter((item) => item.kind === 'action')
+  assert.deepEqual(actions.map((item) => [item.text, item.citations, item.commitment]), [
+    ['Prepare the cost comparison.', ['S2', 'S3'], { ownerId: null, deadline: '2026-10-08', agreement: 'committed', speakerLabel: 'SPEAKER_01' }],
+    ['Schedule a check-in.', ['S3'], { ownerId: null, deadline: null, agreement: 'proposed', speakerLabel: null }],
+  ], 'a label that is not in the transcript is dropped')
 })
 
 test('a Claude refusal or malformed reply fails closed with only PROCESSOR_FAILED and stores nothing', async () => {

@@ -66,6 +66,6 @@ test('the meeting processor preserves anonymous diarization and never supplies i
   const result = await processor.process({ bytes: wav() })
   assert.equal(result.processor, LOCAL_SPEECH_PROCESSOR_LABELS.diarizedTranscriptOnly)
   assert.deepEqual(result.segments.map((item) => [item.diarizationLabel, item.identityConfidence]), [
-    ['speaker_local_0', null], ['speaker_local_0', null],
-  ])
+    ['SPEAKER_00', null], ['SPEAKER_00', null],
+  ], 'worker labels are renumbered by first appearance and never carry identity')
 })

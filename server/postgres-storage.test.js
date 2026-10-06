@@ -102,7 +102,7 @@ test('a processed meeting is stored in PostgreSQL, survives a restart, and keeps
       assert.deepEqual(after.segments, before.segments)
       assert.deepEqual(after.assertions, before.assertions)
       assert.deepEqual((await restarted.queryCommitments(sam, '')).commitments.map((item) => [item.ownerId, item.deadline]), [['sam', '2026-10-20T00:00:00.000Z']])
-      assert.match((await restarted.exportMeetingRecord(sam, 'meeting-1')).body, /Send the security findings\. \| sam \| 2026-10-20/)
+      assert.match((await restarted.exportMeetingRecord(sam, 'meeting-1')).body, /Send the security findings\. \| Proposed \| sam \| 2026-10-20/)
       const chain = await reopened.storage.scope({ tenantId: 'northstar' }).audit.chain()
       assert.ok(chain.length > 10)
       assert.equal(verifyAuditChain(chain, { tenantId: 'northstar' }).valid, true)

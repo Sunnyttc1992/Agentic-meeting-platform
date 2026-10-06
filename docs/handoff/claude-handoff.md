@@ -64,7 +64,7 @@ Validation on a synthetic two-voice Windows TTS WAV (35.4 s; no real meeting aud
 ## Non-negotiable constraints
 
 - No cloud speech-to-text; Whisper runs locally.
-- Claude receives only transcript text, participant IDs, and meeting date; credentials stay server-side.
+- Claude receives only transcript text (with anonymous speaker labels, since 2026-10-06), participant IDs, and meeting date; credentials stay server-side.
 - No secret values in the browser, source control, .env.example, audit events, terminal output, or handoff.
 - No voiceprints, speaker enrollment, or automatic name assignment.
 - Do not expose the API on the LAN, deploy it, or add Entra/Teams connectivity without a new user decision.

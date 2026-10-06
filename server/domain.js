@@ -92,6 +92,8 @@ export function knowledgeAssertion(input) {
 }
 
 const COMMITMENT_STATUSES = new Set(['open', 'in-progress', 'blocked', 'completed', 'cancelled'])
+const COMMITMENT_AGREEMENTS = new Set(['committed', 'proposed'])
+const ANONYMOUS_SPEAKER_LABEL = /^SPEAKER_\d{2}$/
 
 function canonicalCommitment(kind, input) {
   if (kind !== 'action') return null
@@ -103,5 +105,13 @@ function canonicalCommitment(kind, input) {
   invariant(value.deadline === undefined || deadline !== null, 'INVALID_COMMITMENT', 'Commitment deadline must be a valid timestamp')
   invariant(value.ownerId === undefined || ownerId !== null, 'INVALID_COMMITMENT', 'Commitment owner must be a non-empty string')
   invariant(value.status === undefined || COMMITMENT_STATUSES.has(value.status), 'INVALID_COMMITMENT', 'Commitment status is invalid')
-  return Object.freeze({ ownerId, deadline, status: value.status ?? 'open' })
+  invariant(value.agreement === undefined || value.agreement === null || COMMITMENT_AGREEMENTS.has(value.agreement), 'INVALID_COMMITMENT', 'Commitment agreement is invalid')
+  invariant(value.speakerLabel === undefined || value.speakerLabel === null || ANONYMOUS_SPEAKER_LABEL.test(value.speakerLabel), 'INVALID_COMMITMENT', 'Commitment speaker label must be an anonymous label')
+  // agreement and speakerLabel are optional so earlier records keep their shape.
+  // A speaker label is an anonymous voice cluster, never an identity or owner.
+  return Object.freeze({
+    ownerId, deadline, status: value.status ?? 'open',
+    ...(value.agreement ? { agreement: value.agreement } : {}),
+    ...(value.speakerLabel ? { speakerLabel: value.speakerLabel } : {}),
+  })
 }

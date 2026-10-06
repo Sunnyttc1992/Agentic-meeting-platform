@@ -84,7 +84,7 @@ test('a processed meeting survives a restart, and the audit chain continues unbr
       assert.deepEqual(after.segments, before.segments)
       assert.deepEqual(after.assertions, before.assertions)
       assert.deepEqual((await second.platform.queryCommitments(sam, '')).commitments.map((item) => [item.ownerId, item.deadline]), [['sam', '2026-10-20T00:00:00.000Z']])
-      assert.match((await second.platform.exportMeetingRecord(sam, 'meeting-1')).body, /Send the security findings\. \| sam \| 2026-10-20/)
+      assert.match((await second.platform.exportMeetingRecord(sam, 'meeting-1')).body, /Send the security findings\. \| Proposed \| sam \| 2026-10-20/)
       assert.ok((await second.platform.authorizeRecording(alex, 'meeting-1')).leaseId, 'consent evidence survived the restart')
 
       const chain = second.durable.storage.scope({ tenantId: 'northstar' }).audit.chain()

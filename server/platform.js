@@ -745,12 +745,16 @@ export class MeetingIntelligencePlatform {
   }
 
   // Action owners are kept only when they are participants of this meeting;
-  // deadlines only when they are real calendar dates. Anything else stays
-  // unknown rather than being guessed.
-  #canonicalProcessorCommitment(input, participantIds) {
+  // deadlines only when they are real calendar dates; speaker labels only when
+  // they label this transcript. Anything else stays unknown rather than guessed.
+  #canonicalProcessorCommitment(input, participantIds, speakerLabelFor = () => null) {
     const value = input && typeof input === 'object' && !Array.isArray(input) ? input : {}
     const commitment = { status: 'open' }
     if (typeof value.ownerId === 'string' && participantIds.includes(value.ownerId)) commitment.ownerId = value.ownerId
+    if (value.agreement === 'committed' || value.agreement === 'proposed') commitment.agreement = value.agreement
+    // Only a label that appears on this transcript's segments is kept.
+    const speakerLabel = typeof value.speakerLabel === 'string' ? speakerLabelFor(value.speakerLabel) : null
+    if (speakerLabel) commitment.speakerLabel = speakerLabel
     if (typeof value.deadline === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.deadline)) {
       const parsed = new Date(`${value.deadline}T00:00:00.000Z`)
       if (Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value.deadline) commitment.deadline = parsed.toISOString()
@@ -812,7 +816,7 @@ export class MeetingIntelligencePlatform {
         text: item.text.trim(),
         citations: [...new Set(item.citations.map((id) => rawSegmentIds.get(id)))],
         provenance: this.#canonicalProcessorAssertionProvenance(descriptor, recording),
-        ...(kind === 'action' ? { commitment: this.#canonicalProcessorCommitment(item.commitment, participantIds) } : {}),
+        ...(kind === 'action' ? { commitment: this.#canonicalProcessorCommitment(item.commitment, participantIds, (raw) => diarizationLabels.get(raw) ?? null) } : {}),
       }))
     }
     return {

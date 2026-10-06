@@ -68,6 +68,8 @@ export function deriveCommitmentRows(tenantId, meetingId, knowledge) {
       ownerId: commitment.ownerId ?? null,
       deadline: commitment.deadline ?? null,
       status: commitment.status ?? 'open',
+      ...(commitment.agreement ? { agreement: commitment.agreement } : {}),
+      ...(commitment.speakerLabel ? { speakerLabel: commitment.speakerLabel } : {}),
       citations: Object.freeze([...assertion.citations]),
     }))
   }

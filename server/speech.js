@@ -33,9 +33,17 @@ export class LocalMeetingProcessor {
   async process({ bytes, participantIds = [] }) {
     const transcribed = await this.transcriber.transcribe(bytes)
     const labeled = this.diarizer ? applyDiarizationLabels(transcribed, await this.diarizer.diarize(bytes)) : transcribed
+    // Number anonymous labels by first appearance, the same order the platform
+    // stores, so a label Claude cites on an action matches the transcript.
+    const ordered = new Map()
+    const ordinal = (label) => {
+      if (!label || label === 'UNATTRIBUTED') return 'UNATTRIBUTED'
+      if (!ordered.has(label)) ordered.set(label, `SPEAKER_${String(ordered.size).padStart(2, '0')}`)
+      return ordered.get(label)
+    }
     const segments = labeled.map((item, index) => ({
       id: `S${index + 1}`, startMs: item.startMs, endMs: item.endMs, text: item.text,
-      diarizationLabel: item.diarizationLabel ?? 'UNATTRIBUTED', identityConfidence: null,
+      diarizationLabel: ordinal(item.diarizationLabel), identityConfidence: null,
     }))
     if (!this.intelligence || segments.length === 0) return { segments, assertions: [], processor: this.name }
     const result = await this.intelligence.extract({ segments, participantIds, meetingDate: this.now().toISOString().slice(0, 10) })
@@ -45,7 +53,7 @@ export class LocalMeetingProcessor {
     for (const item of result.decisions) add('decision', item)
     for (const item of result.risks) add('risk', item)
     for (const item of result.questions) add('question', item)
-    for (const item of result.actions) add('action', item, { commitment: { ownerId: item.ownerId, deadline: item.deadline } })
+    for (const item of result.actions) add('action', item, { commitment: { ownerId: item.ownerId, deadline: item.deadline, agreement: item.agreement, speakerLabel: item.speakerLabel } })
     return { segments, assertions, processor: this.name }
   }
 }

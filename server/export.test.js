@@ -63,7 +63,7 @@ test('a participant exports a cited, confidential meeting record', async () => {
   const body = record.body
   assert.match(body, /\*\*Confidential\.\*\* Exported for sam on 2026-10-03T12:00:00\.000Z/)
   assert.match(body, /## Executive summary\n\nThe team kept the phased rollout pending security sign-off\.\n\n_Sources 00:00_/)
-  assert.match(body, /\| Send the security findings\. \| sam \| 2026-10-20 \| Sources 00:04 \|/)
+  assert.match(body, /\| Send the security findings\. \| Proposed \| sam \| 2026-10-20 \| Sources 00:04 \|/)
   assert.match(body, /## Decisions\n\n- Keep the phased rollout\. \(Sources 00:00\)/)
   assert.match(body, /- \*\*00:04\*\* Speaker not identified: Sam, send the security findings by October 20\./)
   assert.match(body, /Processed by: Local Whisper \+ Claude/)
