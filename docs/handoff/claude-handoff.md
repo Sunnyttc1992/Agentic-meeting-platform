@@ -5,7 +5,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 ## Project and checkpoint
 
 - Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
-- Latest code checkpoint: `12a489c Smoke test the real local meeting workflow` (feature delivery began at `5390d5a`).
+- Latest functional code checkpoint: `3ae7fa2 Assert browser processing smoke outcome` (feature delivery began at `5390d5a`). The commit that updates this handoff follows it.
 - The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
 - Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
