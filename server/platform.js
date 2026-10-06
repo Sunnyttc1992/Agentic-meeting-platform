@@ -20,6 +20,8 @@ const TRUSTED_PROCESSOR_MODES = new Map([
   ['Local deterministic processor', 'local-deterministic-fake'],
   ['Local Whisper + Claude', 'local-whisper-claude'],
   ['Local Whisper transcription only', 'local-whisper-transcript-only'],
+  ['Local Whisper + pyannote + Claude', 'local-whisper-pyannote-claude'],
+  ['Local Whisper + pyannote transcription', 'local-whisper-pyannote-transcript-only'],
 ])
 // Whisper cannot separate speakers; this label is kept verbatim so the
 // transcript never implies one diarized speaker.

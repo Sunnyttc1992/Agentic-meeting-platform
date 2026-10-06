@@ -6,6 +6,7 @@ import { PolicyEngine } from './policy.js'
 import { FakeSpeechProcessor, LocalMeetingProcessor } from './speech.js'
 import { createInMemoryMeetingStorage } from './storage.js'
 import { LocalWhisperTranscriber } from './transcription.js'
+import { LocalPyannoteDiarizer } from './diarization.js'
 import { ClaudeMeetingIntelligence } from './intelligence.js'
 import { RECORDING_MIME_TYPES, SPEECH_WAV_MIME_TYPE } from '../src/recordingFormats.js'
 
@@ -33,6 +34,7 @@ export function createSpeechProcessor({ mode = process.env.MEETING_PROCESSOR ?? 
   if (mode === 'fake') return new FakeSpeechProcessor()
   return new LocalMeetingProcessor({
     transcriber: new LocalWhisperTranscriber(),
+    diarizer: new LocalPyannoteDiarizer({ env }),
     intelligence: hasAnthropicCredentials(env) ? new ClaudeMeetingIntelligence() : null,
   })
 }

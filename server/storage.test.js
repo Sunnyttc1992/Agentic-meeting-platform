@@ -5,6 +5,7 @@ import { createInMemoryMeetingStorage, createMeetingStorageBundle, createTenantS
 import { MeetingIntelligencePlatform } from './platform.js'
 import { PolicyEngine } from './policy.js'
 import { FakeSpeechProcessor } from './speech.js'
+import { FixedClock } from './adapters/in-memory.js'
 
 test('the prototype storage bundle satisfies the durable adapter contract and scopes transactions', async () => {
   const storage = createInMemoryMeetingStorage()
@@ -174,6 +175,7 @@ test('storage-backed platform emits tenant-scoped canonical lifecycle events wit
     storage,
     policy: new PolicyEngine({ knownClassifications: ['standard'] }),
     speechProcessor: new FakeSpeechProcessor(),
+    clock: new FixedClock('2026-10-03T12:00:00Z'),
     schedule: (job) => jobs.push(job),
   })
   const alex = { tenantId: 'northstar', userId: 'alex' }
@@ -250,7 +252,7 @@ test('canonical transcript and assertion outbox writes are replay-safe and roll 
   const storage = createInMemoryMeetingStorage({
     shouldFailOutboxEnqueue: (event) => event.type === failingEventType,
   })
-  const platform = new MeetingIntelligencePlatform({ storage, policy: new PolicyEngine() })
+  const platform = new MeetingIntelligencePlatform({ storage, policy: new PolicyEngine(), clock: new FixedClock('2026-10-03T12:00:00Z') })
   const alex = { tenantId: 'northstar', userId: 'alex' }
   const sam = { tenantId: 'northstar', userId: 'sam' }
   await platform.createMeeting(alex, {

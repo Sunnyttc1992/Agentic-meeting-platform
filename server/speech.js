@@ -1,4 +1,5 @@
 import { knowledgeAssertion, transcriptSegment } from './domain.js'
+import { applyDiarizationLabels } from './diarization.js'
 
 function exactRosterBinding(diarizationLabel, rosterEvidence) {
   const matches = rosterEvidence
@@ -11,24 +12,30 @@ function exactRosterBinding(diarizationLabel, rosterEvidence) {
 export const LOCAL_SPEECH_PROCESSOR_LABELS = Object.freeze({
   full: 'Local Whisper + Claude',
   transcriptOnly: 'Local Whisper transcription only',
+  diarizedFull: 'Local Whisper + pyannote + Claude',
+  diarizedTranscriptOnly: 'Local Whisper + pyannote transcription',
 })
 
 // Real pipeline: Whisper transcribes on this machine, then (when credentials
 // are configured) Claude writes the cited summary and action plan from that
 // transcript. The platform normalizes and re-validates the whole result.
 export class LocalMeetingProcessor {
-  constructor({ transcriber, intelligence = null, now = () => new Date() }) {
+  constructor({ transcriber, diarizer = null, intelligence = null, now = () => new Date() }) {
     this.transcriber = transcriber
+    this.diarizer = diarizer?.enabled ? diarizer : null
     this.intelligence = intelligence
     this.now = now
-    this.name = intelligence ? LOCAL_SPEECH_PROCESSOR_LABELS.full : LOCAL_SPEECH_PROCESSOR_LABELS.transcriptOnly
+    this.name = this.diarizer
+      ? (intelligence ? LOCAL_SPEECH_PROCESSOR_LABELS.diarizedFull : LOCAL_SPEECH_PROCESSOR_LABELS.diarizedTranscriptOnly)
+      : (intelligence ? LOCAL_SPEECH_PROCESSOR_LABELS.full : LOCAL_SPEECH_PROCESSOR_LABELS.transcriptOnly)
   }
 
   async process({ bytes, participantIds = [] }) {
     const transcribed = await this.transcriber.transcribe(bytes)
-    const segments = transcribed.map((item, index) => ({
+    const labeled = this.diarizer ? applyDiarizationLabels(transcribed, await this.diarizer.diarize(bytes)) : transcribed
+    const segments = labeled.map((item, index) => ({
       id: `S${index + 1}`, startMs: item.startMs, endMs: item.endMs, text: item.text,
-      diarizationLabel: 'UNATTRIBUTED', identityConfidence: null,
+      diarizationLabel: item.diarizationLabel ?? 'UNATTRIBUTED', identityConfidence: null,
     }))
     if (!this.intelligence || segments.length === 0) return { segments, assertions: [], processor: this.name }
     const result = await this.intelligence.extract({ segments, participantIds, meetingDate: this.now().toISOString().slice(0, 10) })
