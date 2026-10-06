@@ -942,8 +942,13 @@ export class MeetingIntelligencePlatform {
     return (await this.#audited(actor, correlationId, 'consent.record', meetingId, async () => {
       const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       invariant(actor.userId === body.participantId && meetingRecord.participantIds.includes(actor.userId), 'CONSENT_FORBIDDEN', 'Participants may record only their own consent', 403)
+      const evidence = consentEvidence(body)
+      // consentEvidence holds each participant's current decision for policy;
+      // consentHistory is append-only, so a later withdrawal never erases the
+      // grant it replaced. Both are content-free.
+      meetingRecord.consentHistory = [...(Array.isArray(meetingRecord.consentHistory) ? meetingRecord.consentHistory : []), Object.freeze({ ...evidence, recordedAt: this.clock.now().toISOString() })]
       meetingRecord.consentEvidence = meetingRecord.consentEvidence.filter((item) => item.participantId !== actor.userId)
-      meetingRecord.consentEvidence.push(consentEvidence(body))
+      meetingRecord.consentEvidence.push(evidence)
       await this.meetings.save(meetingRecord)
       await this.#revokeLeaseIfStale(meetingRecord)
       if (body.decision !== 'granted') {

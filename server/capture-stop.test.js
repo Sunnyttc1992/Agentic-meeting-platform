@@ -113,6 +113,9 @@ test('consent withdrawal during capture records a CONSENT_WITHDRAWN boundary and
   assert.equal(record.recording.leaseId, lease.leaseId)
   assert.equal(record.recording.status, 'revoked')
   assert.deepEqual(record.captureStops.map((stop) => [stop.reason, stop.authorizationRevoked]), [['CONSENT_WITHDRAWN', true]])
+  assert.deepEqual(record.consentEvidence.find((item) => item.participantId === 'sam').decision, 'withdrawn', 'policy sees the current decision')
+  assert.deepEqual(record.consentHistory.filter((item) => item.participantId === 'sam').map((item) => item.decision), ['granted', 'withdrawn'], 'PRIV-03: the earlier grant is kept, append-only')
+  assert.ok(record.consentHistory.every((item) => Object.keys(item).every((key) => ['participantId', 'capturedAt', 'expiresAt', 'policyVersion', 'decision', 'method', 'recordedAt'].includes(key))), 'history is content-free')
 })
 
 test('outsiders cannot stop capture or learn the meeting exists, and only the two stop reasons are accepted', async () => {
