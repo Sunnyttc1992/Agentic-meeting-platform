@@ -5,9 +5,19 @@ import { RecordingStudio } from './RecordingStudio.jsx'
 const headers = () => ({ 'content-type': 'application/json', 'x-tenant-id': 'northstar', 'x-user-id': 'alex', 'x-correlation-id': crypto.randomUUID() })
 
 async function request(path, options = {}) {
-  const response = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers ?? {}) } })
+  const requestHeaders = { ...headers(), ...(options.headers ?? {}) }
+  const reference = requestHeaders['x-correlation-id']
+  let response
+  try {
+    response = await fetch(path, { ...options, headers: requestHeaders })
+  } catch {
+    throw new Error(`Could not reach the local server. Refresh the page once and try again. Reference: ${reference}`)
+  }
   const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(payload?.error?.message ?? 'The local server could not complete that request.')
+  if (!response.ok) {
+    const message = payload?.error?.message ?? `The local server returned ${response.status}.`
+    throw new Error(`${message} Reference: ${payload?.correlationId ?? reference}`)
+  }
   return payload
 }
 
