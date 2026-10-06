@@ -21,6 +21,6 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
   - Recording audio is AES-256-GCM encrypted with an operator-supplied key file (`MEETING_AUDIO_KEY_FILE`).
   - Migrations run only through `npm run db:migrate` as the owner.
   - See `docs/architecture/self-hosted-postgres.md`. The user has decided to keep PostgreSQL local on Windows; use the self-hosted deployment and treat Supabase or another hosted database as out of scope unless this decision is revised.
-- Delivery for now is a working end-to-end pipeline restricted to this machine (loopback only) until Microsoft Entra sign-in replaces the development identity headers. Do not expose the API on a LAN or deploy it before Entra exists.
+- Microsoft Entra integration is deferred until the company formally decides to roll this app out. Until then, keep the working end-to-end pipeline restricted to this machine (loopback only) with its development identity headers; do not expose the API on a LAN or deploy it.
 - Microsoft Teams is the first meeting-platform integration. Do not retain Zoom routes, UI, terminology, or claims. Keep the Teams connector explicitly unconnected until a production server-side Entra/OAuth application and secret-manager configuration exist.
 - The current self-hosted PostgreSQL operating target is Windows. Keep the delivery loopback-only until Microsoft Entra identity is implemented; durable database storage does not authorize wider access.
