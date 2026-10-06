@@ -52,13 +52,13 @@ Validation on a synthetic two-voice Windows TTS WAV (35.4 s; no real meeting aud
 - Full in-memory pipeline (local Whisper + pyannote, Claude deliberately disabled): completed in 36.9 s. 7/7 segments were attributed to the correct voice with anonymous labels, verifiedParticipantId=null, identityConfidence=null, binding unverified-diarization-only.
 - The diarization temporary directory was empty afterwards. Offline was enforced by the worker's HF offline environment flags; no firewall-level test was done.
 - Timings, licence notice, and worker commit were appended to the operator inventory.
-- The loopback preview was restarted on 127.0.0.1:4174 with diarization active (storage: PostgreSQL via DATABASE_URL). /pipeline/readiness does not yet report diarization status.
+- The loopback preview was restarted on 127.0.0.1:4174 with diarization active (storage: PostgreSQL via DATABASE_URL). /pipeline/readiness now reports diarization status.
 
 ## Next actions
 
 1. Optional: test with one consented, non-sensitive real recording through the UI. CPU diarization of a one-hour meeting is estimated at about 27 minutes in addition to Whisper.
 2. Do not enable a GPU path until its runtime/VRAM behavior is measured on this host.
-3. Consider adding diarization configured/unconfigured state to /pipeline/readiness (paths must not be exposed).
+3. Done (2026-10-06): /pipeline/readiness reports diarization.configured, runtimeAvailable, and modelReady as booleans only (file-existence checks; no paths, no Python start).
 4. Build a human correction/mapping UI only after a separate review. It must be per-meeting, reversible, audited without voice embeddings/audio/transcript text, and never provide automatic identity, attendance, authorization, or action ownership.
 
 ## Non-negotiable constraints

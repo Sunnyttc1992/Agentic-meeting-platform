@@ -349,6 +349,7 @@ test('pipeline readiness is loopback-only, authentication-bound, and contains no
     assert.equal(result.body.scope, 'loopback-only')
     assert.equal(typeof result.body.whisper.runtimeAvailable, 'boolean')
     assert.equal(typeof result.body.whisper.modelCacheReady, 'boolean')
+    for (const key of ['configured', 'runtimeAvailable', 'modelReady']) assert.equal(typeof result.body.diarization[key], 'boolean')
     assert.equal(typeof result.body.anthropic.credentialsConfigured, 'boolean')
     assert.equal(result.body.teams.connection, 'not-connected')
     assert.equal(audit.all().find((event) => event.correlationId === 'pipeline-readiness').action, 'teams.readiness')

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { join } from 'node:path'
 import { FixedClock, InMemoryAppendOnlyAudit, InMemoryKnowledgeRepository, InMemoryMeetingRepository, InMemoryRecordingRepository } from './adapters/in-memory.js'
 import { hasAnthropicCredentials } from './development.js'
 import { ClaudeMeetingIntelligence, DEFAULT_SUMMARY_MODEL } from './intelligence.js'
@@ -9,7 +10,7 @@ import { MeetingIntelligencePlatform } from './platform.js'
 import { PolicyEngine } from './policy.js'
 import { LocalMeetingProcessor } from './speech.js'
 import { LocalWhisperTranscriber } from './transcription.js'
-import { createPipelineReadiness, hasCachedWhisperModel } from './pipeline-readiness.js'
+import { createPipelineReadiness, hasCachedWhisperModel, inspectLocalDiarization } from './pipeline-readiness.js'
 import { parseSpeechWav } from './wav.js'
 import { encodeWavPcm16, mixToMono } from '../src/audioTranscode.js'
 import { SPEECH_WAV_MIME_TYPE } from '../src/recordingFormats.js'
@@ -216,10 +217,12 @@ test('pipeline readiness is value-free and never initializes models or contacts 
       runtimeAvailable: () => { runtimeChecks += 1; return true },
       modelCached: () => { cacheChecks += 1; return false },
       anthropicConfigured: (env) => { credentialChecks += 1; return Boolean(env.ANTHROPIC_API_KEY) },
+      diarization: () => ({ configured: true, runtimeAvailable: true, modelReady: true, modelDir: canary }),
     }).inspect({ teamsReadiness: { connection: 'not-connected', oauth: { clientId: canary } } })
     assert.deepEqual(readiness, {
       scope: 'loopback-only',
       whisper: { runtimeAvailable: true, modelCacheReady: false },
+      diarization: { configured: true, runtimeAvailable: true, modelReady: true },
       anthropic: { credentialsConfigured: true },
       teams: { connection: 'not-connected' },
     })
@@ -228,6 +231,17 @@ test('pipeline readiness is value-free and never initializes models or contacts 
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('diarization readiness checks file existence only and requires every Community-1 model file', () => {
+  const env = Object.freeze({ DIARIZATION_PYTHON: 'D:/assets/runtime/Scripts/python.exe', DIARIZATION_MODEL_DIR: 'D:/assets/model' })
+  const present = new Set([env.DIARIZATION_PYTHON, join(env.DIARIZATION_MODEL_DIR, 'config.yaml'), join(env.DIARIZATION_MODEL_DIR, 'segmentation', 'pytorch_model.bin')])
+  const exists = (path) => present.has(path)
+  assert.deepEqual(inspectLocalDiarization({ env, exists }), { configured: true, runtimeAvailable: true, modelReady: false }, 'a missing embedding model is not ready')
+  present.add(join(env.DIARIZATION_MODEL_DIR, 'embedding', 'pytorch_model.bin'))
+  assert.deepEqual(inspectLocalDiarization({ env, exists }), { configured: true, runtimeAvailable: true, modelReady: true })
+  assert.deepEqual(inspectLocalDiarization({ env: { DIARIZATION_PYTHON: env.DIARIZATION_PYTHON }, exists }), { configured: false, runtimeAvailable: false, modelReady: false })
+  assert.deepEqual(inspectLocalDiarization({ env, exists: () => { throw new Error('denied') } }), { configured: true, runtimeAvailable: false, modelReady: false })
 })
 
 test('pipeline readiness honestly reports missing local Anthropic configuration without reading an env file', () => {
@@ -247,6 +261,7 @@ test('pipeline readiness honestly reports missing local Anthropic configuration 
   assert.deepEqual(readiness, {
     scope: 'loopback-only',
     whisper: { runtimeAvailable: true, modelCacheReady: false },
+    diarization: { configured: false, runtimeAvailable: false, modelReady: false },
     anthropic: { credentialsConfigured: false },
     teams: { connection: 'not-connected' },
   })

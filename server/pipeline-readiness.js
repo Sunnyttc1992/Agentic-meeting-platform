@@ -52,6 +52,29 @@ export function hasLocalWhisperRuntime(resolveModule = require.resolve) {
   return safeBoolean(() => resolveModule('@huggingface/transformers'))
 }
 
+// Community-1 is usable offline only when its pipeline config and both model
+// weights are present. Existence checks only: no file is read, no Python
+// process starts, and no path is returned.
+const DIARIZATION_MODEL_FILES = Object.freeze(['config.yaml', join('segmentation', 'pytorch_model.bin'), join('embedding', 'pytorch_model.bin')])
+
+export function inspectLocalDiarization({ env = process.env, exists = existsSync } = {}) {
+  const python = env.DIARIZATION_PYTHON
+  const modelDir = env.DIARIZATION_MODEL_DIR
+  const configured = typeof python === 'string' && python.length > 0 && typeof modelDir === 'string' && modelDir.length > 0
+  return {
+    configured,
+    runtimeAvailable: configured && safeBoolean(() => exists(python)),
+    modelReady: configured && DIARIZATION_MODEL_FILES.every((file) => safeBoolean(() => exists(join(modelDir, file)))),
+  }
+}
+
+// Copy only the three booleans so an inspector can never leak a path or value.
+function diarizationState(inspect) {
+  let state = {}
+  try { state = inspect() ?? {} } catch {}
+  return { configured: state.configured === true, runtimeAvailable: state.runtimeAvailable === true, modelReady: state.modelReady === true }
+}
+
 // This probe is intentionally side-effect free. It reports readiness, not a
 // live health check: it never initializes Whisper, downloads model weights,
 // opens a connection to Anthropic, reads credential values, or sends audio.
@@ -62,6 +85,7 @@ export function createPipelineReadiness({
   runtimeAvailable = hasLocalWhisperRuntime,
   modelCached = hasCachedWhisperModel,
   anthropicConfigured = hasAnthropicCredentials,
+  diarization = inspectLocalDiarization,
 } = {}) {
   return Object.freeze({
     inspect({ teamsReadiness } = {}) {
@@ -72,6 +96,7 @@ export function createPipelineReadiness({
           runtimeAvailable: safeBoolean(() => runtimeAvailable()),
           modelCacheReady: safeBoolean(() => modelCached({ cacheDir, model })),
         }),
+        diarization: Object.freeze(diarizationState(() => diarization({ env }))),
         anthropic: Object.freeze({ credentialsConfigured: safeBoolean(() => anthropicConfigured(env)) }),
         teams: Object.freeze({ connection: teamsNotConnected ? 'not-connected' : 'unavailable' }),
       })
