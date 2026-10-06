@@ -111,6 +111,27 @@ test('a processed meeting is stored in PostgreSQL, survives a restart, and keeps
   } finally { rmSync(dataDir, { recursive: true, force: true }) }
 })
 
+test('a second recording keeps the first recording\'s transcript and actions in PostgreSQL', async () => {
+  const database = await openDatabase()
+  try {
+    const platform = platformOn(openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY }).storage)
+    const first = await seedAndUpload(platform)
+    await platform.startProcessing(alex, 'meeting-1', first)
+    await settle()
+    const before = await platform.getRecording(alex, 'meeting-1', first)
+    const lease = await platform.authorizeRecording(alex, 'meeting-1')
+    const created = await platform.createRecording(alex, 'meeting-1', { leaseId: lease.leaseId, contentType: SPEECH_WAV_MIME_TYPE, byteLength: AUDIO.length, sha256: createHash('sha256').update(AUDIO).digest('hex') })
+    await platform.uploadRecording(alex, 'meeting-1', created.recordingId, { contentType: SPEECH_WAV_MIME_TYPE, contentLength: AUDIO.length, bytes: AUDIO })
+    await platform.startProcessing(alex, 'meeting-1', created.recordingId)
+    await settle()
+    assert.equal((await platform.getRecording(alex, 'meeting-1', created.recordingId)).recording.state, 'completed')
+    const after = await platform.getRecording(sam, 'meeting-1', first)
+    assert.deepEqual(after.segments, before.segments)
+    assert.deepEqual(after.assertions, before.assertions)
+    assert.equal((await platform.queryCommitments(sam, '')).commitments.length, 2)
+  } finally { await database.close() }
+})
+
 test('row-level security isolates tenants inside the database itself', async () => {
   const database = await openDatabase()
   try {

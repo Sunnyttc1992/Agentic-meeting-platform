@@ -135,7 +135,7 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 | CAP-07 | done | PostgreSQL storage, migrations, RLS tests | none at M |
 | CAP-08 | done | One live OpenAI synthetic run | Evaluation set; approval packets |
 | CAP-09 | done | none | Model evaluation |
-| CAP-10 | partial | none | Rescinded decisions and recomputation versioning |
+| CAP-10 | partial | Each recording in a meeting keeps its own transcript, decisions, and actions; a later recording or a processor failure cannot replace them (in-memory, SQLite, PostgreSQL tests) | Rescinded decisions and recomputation versioning |
 | AUTH-01 | done | Tenant RLS in PostgreSQL | Per-participant grants in the database |
 | AUTH-02 | done | none | IdP/HR hierarchy source |
 | AUTH-03 | partial | none | Revocation SLA for cached/derived paths |

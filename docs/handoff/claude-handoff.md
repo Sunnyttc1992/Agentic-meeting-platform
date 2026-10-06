@@ -5,7 +5,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 ## Project and checkpoint
 
 - Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
-- Latest functional code checkpoint: `28774ea Expose safe local request diagnostics` (feature delivery began at `5390d5a`). The commit that updates this handoff follows it.
+- Latest functional code checkpoint: the commit `Keep each recording's knowledge when a meeting is recorded again` (after `28774ea Expose safe local request diagnostics`) (feature delivery began at `5390d5a`). The commit that updates this handoff follows it.
 - The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
 - Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
@@ -43,10 +43,12 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 18. `npm run verify:release -- --preview=4173` now produces a secret-free JSON release-evidence record. It runs `npm test`, the production build, and Sites package tests; verifies the required build artifacts; optionally checks the already-running loopback shell; records the release commit and clean tracked-worktree state; and lists the organization-controlled launch gates separately. It deliberately does not inspect `.env`, credentials, keys, transcripts, or meeting data.
 19. `npm run smoke:browser` starts a temporary SQLite-backed loopback preview **without loading `.env`**, drives headless Chrome through the real workspace's create-meeting, consent, preflight, microphone capture, stop, and local-review sequence, then terminates the server and deletes the temporary data. It asserts the local review player is present. `npm run smoke:browser -- -ProcessRecording` additionally confirms the synthetic audio, then asserts completed local Whisper processing with a non-empty transcript. Neither mode may point at an existing server holding real meetings.
 20. The local workspace creates a correlation ID per request. A failure now reports only a safe transport/status message and that reference, so a local operator can identify a request without exposing credentials or meeting content.
+21. A meeting can hold several recordings (a stopped capture needs a fresh preflight). Completing or failing one recording now replaces only that recording's segments and the assertions citing them; other recordings' knowledge is rewritten unchanged in the same tenant transaction, and commitments are re-derived from the whole meeting. Previously a second recording silently erased the first recording's transcript, decisions, and actions, and `GET /meetings/:id/recordings/:rid` returned the meeting-wide knowledge under the wrong recording. It now returns only that recording's segments and the assertions whose citations all reference them. Policy-revocation quarantine still clears the whole meeting on purpose.
 
 ## Validation at this checkpoint
 
-- `npm test`: **205/205 passing**.
+- `npm test`: **208/208 passing** (three new multi-recording regression tests across in-memory, SQLite, and PostgreSQL/PGlite; each failed before the fix).
+- `npm run smoke:browser` and `npm run smoke:browser -- -ProcessRecording` passed with zero browser errors after the multi-recording fix.
 - `npm run build`: passed.
 - `npm run test:sites`: **4/4 passing**.
 - Parsed all three new PowerShell scripts and ran `bash -n scripts/setup-windows-postgres.sh`.

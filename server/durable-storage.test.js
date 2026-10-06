@@ -94,6 +94,26 @@ test('a processed meeting survives a restart, and the audit chain continues unbr
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
 
+test('a second recording keeps the first recording\'s transcript and actions in the same SQLite transaction', async () => {
+  const directory = tempDirectory()
+  const { platform, durable } = openPlatform(directory)
+  try {
+    await seedMeeting(platform)
+    const first = await uploadAudio(platform)
+    await platform.startProcessing(alex, 'meeting-1', first)
+    await settle()
+    const before = await platform.getRecording(alex, 'meeting-1', first)
+    const second = await uploadAudio(platform)
+    await platform.startProcessing(alex, 'meeting-1', second)
+    await settle()
+    assert.equal((await platform.getRecording(alex, 'meeting-1', second)).recording.state, 'completed')
+    const after = await platform.getRecording(sam, 'meeting-1', first)
+    assert.deepEqual(after.segments, before.segments)
+    assert.deepEqual(after.assertions, before.assertions)
+    assert.equal((await platform.queryCommitments(sam, '')).commitments.length, 2)
+  } finally { durable.close(); rmSync(directory, { recursive: true, force: true }) }
+})
+
 test('recording audio is encrypted at rest, bound to its recording, and fails closed when tampered or rekeyed', async () => {
   const directory = tempDirectory()
   try {

@@ -125,6 +125,26 @@ const view = (recording) => ({
   error: recording.error ?? null,
 })
 
+// A meeting may hold several recordings: a stopped capture needs a fresh
+// preflight. A recording owns the segments whose canonical provenance names it
+// and the assertions citing them; a claim citing a removed segment would be
+// uncited, so it goes with that recording.
+function knowledgeWithoutRecording(snapshot, recordingId) {
+  const removed = new Set(snapshot.segments.filter((item) => item.provenance?.recordingId === recordingId).map((item) => item.id))
+  return {
+    segments: snapshot.segments.filter((item) => !removed.has(item.id)),
+    assertions: snapshot.assertions.filter((item) => !item.citations.some((id) => removed.has(id))),
+  }
+}
+
+function knowledgeForRecording(snapshot, recordingId) {
+  const owned = new Set(snapshot.segments.filter((item) => item.provenance?.recordingId === recordingId).map((item) => item.id))
+  return {
+    segments: snapshot.segments.filter((item) => owned.has(item.id)),
+    assertions: snapshot.assertions.filter((item) => item.citations.length > 0 && item.citations.every((id) => owned.has(id))),
+  }
+}
+
 // A platform supplied with a durable storage bundle must not retain the
 // bundle's global repositories.  These adapters preserve the legacy domain
 // repository call shape while each operation enters through a tenant-bound
@@ -613,6 +633,20 @@ export class MeetingIntelligencePlatform {
     else await commitments.replaceMeeting(meetingId, (await knowledge.forMeeting(meetingId)))
   }
 
+  // Publishing or failing one recording replaces only that recording's
+  // knowledge. The rest of the meeting is rewritten unchanged in the same
+  // tenant transaction, and the commitment registry is re-derived from it.
+  async #replaceRecordingKnowledge(recording, published, { transaction = null, knowledge, commitments }) {
+    const { tenantId, meetingId } = recording
+    const snapshot = transaction ? (await knowledge.forMeeting(meetingId)) : (await knowledge.forMeeting(tenantId, meetingId))
+    const retained = knowledgeWithoutRecording(snapshot, recording.id)
+    if (transaction) await knowledge.clearMeeting(meetingId)
+    else await knowledge.clearMeeting(tenantId, meetingId)
+    await knowledge.addSegments([...retained.segments, ...published.segments])
+    await knowledge.addAssertions([...retained.assertions, ...published.assertions])
+    await this.#syncCommitments(tenantId, meetingId, { knowledge, commitments })
+  }
+
   #classificationSummary(meetingRecord) {
     const neverRecord = NEVER_RECORD_CATEGORIES.has(meetingRecord.classification)
     const confidential = neverRecord || (this.policy.sensitiveCategories?.has?.(meetingRecord.classification) ?? false)
@@ -943,13 +977,7 @@ export class MeetingIntelligencePlatform {
         record.error = PROCESSOR_FAILED
         record.processor = null
         await recordings.save(record)
-        if (transaction) {
-          await knowledge.clearMeeting(record.meetingId)
-          await commitments.clearMeeting(record.meetingId)
-        } else {
-          await knowledge.clearMeeting(record.tenantId, record.meetingId)
-          await commitments.clearMeeting(record.tenantId, record.meetingId)
-        }
+        await this.#replaceRecordingKnowledge(record, { segments: [], assertions: [] }, { transaction, knowledge, commitments })
       }
       // Processor failures are deliberately not outbox events. The processor
       // is untrusted and a failed payload must never become a downstream
@@ -1316,21 +1344,8 @@ export class MeetingIntelligencePlatform {
         const knowledge = transaction?.knowledge ?? this.knowledge
         const commitments = transaction?.commitments ?? this.commitments
         const recordings = transaction?.recordings ?? this.recordings
-        if (transaction) {
-          await knowledge.clearMeeting(recording.meetingId)
-          await commitments.clearMeeting(recording.meetingId)
-          await knowledge.addSegments(result.segments)
-          await knowledge.addAssertions(result.assertions)
-          await commitments.replaceMeeting(recording.meetingId, (await knowledge.forMeeting(recording.meetingId)))
-          await recordings.save(recording)
-        } else {
-          await knowledge.clearMeeting(recording.tenantId, recording.meetingId)
-          await commitments.clearMeeting(recording.tenantId, recording.meetingId)
-          await knowledge.addSegments(result.segments)
-          await knowledge.addAssertions(result.assertions)
-          await this.#syncCommitments(recording.tenantId, recording.meetingId)
-          await recordings.save(recording)
-        }
+        await this.#replaceRecordingKnowledge(recording, result, { transaction, knowledge, commitments })
+        await recordings.save(recording)
         await this.#emitKnowledgeChange(meetingRecord, `recording:${recording.id}:completed`, { commitmentsChanged: true, transaction, knowledge, commitments })
         await this.#emitOutbox({
           tenantId: recording.tenantId,
@@ -1356,7 +1371,7 @@ export class MeetingIntelligencePlatform {
       this.policy.require(this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() }))
       const recording = (await this.#recording(actor, meetingId, recordingId))
       const output = { recording: view(recording) }
-      if (recording.state === 'completed') Object.assign(output, (await this.knowledge.forMeeting(actor.tenantId, meetingId)))
+      if (recording.state === 'completed') Object.assign(output, knowledgeForRecording((await this.knowledge.forMeeting(actor.tenantId, meetingId)), recording.id))
       return output
     }, recordingId))
   }

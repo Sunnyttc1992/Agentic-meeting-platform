@@ -604,6 +604,39 @@ test('fake diarization stays independent and alex+bob roster evidence never inve
   assert.ok(withEvidence.assertions.every((assertion) => assertion.citations.every((id) => segmentIds.has(id))))
 })
 
+test('a later recording in the same meeting never replaces or relabels an earlier recording\'s knowledge', async () => {
+  const fake = new FakeSpeechProcessor()
+  let failNext = false
+  const processor = { name: fake.name, process: async (input) => { if (failNext) throw new Error('worker crashed'); return fake.process(input) } }
+  const setupResult = await setup({ processor })
+  const processed = async () => {
+    const { created } = await createUploaded(setupResult)
+    await setupResult.platform.startProcessing(alex, 'meeting-1', created.recordingId)
+    await setupResult.jobs.at(-1)()
+    return created.recordingId
+  }
+  const first = await processed()
+  const firstBefore = await setupResult.platform.getRecording(sam, 'meeting-1', first)
+  const second = await processed()
+
+  const firstAfter = await setupResult.platform.getRecording(sam, 'meeting-1', first)
+  const secondView = await setupResult.platform.getRecording(sam, 'meeting-1', second)
+  assert.deepEqual(firstAfter.segments, firstBefore.segments)
+  assert.deepEqual(firstAfter.assertions, firstBefore.assertions)
+  assert.ok(secondView.segments.length > 0 && secondView.segments.every((segment) => segment.provenance.recordingId === second), 'each recording shows only its own transcript')
+  assert.ok(secondView.assertions.every((assertion) => assertion.id.startsWith(`${second}-`)))
+  const meetingKnowledge = await setupResult.platform.getMeetingKnowledge(sam, 'meeting-1')
+  assert.equal(meetingKnowledge.segments.length, firstBefore.segments.length * 2)
+  assert.equal((await setupResult.platform.queryCommitments(sam, '')).commitments.length, 2)
+
+  failNext = true
+  const failed = await processed()
+  assert.equal((await setupResult.platform.getRecording(sam, 'meeting-1', failed)).recording.state, 'failed')
+  assert.deepEqual((await setupResult.platform.getRecording(sam, 'meeting-1', first)).assertions, firstBefore.assertions, 'a failed recording leaves earlier knowledge intact')
+  assert.equal((await setupResult.platform.getMeetingKnowledge(sam, 'meeting-1')).segments.length, meetingKnowledge.segments.length)
+  assert.equal((await setupResult.platform.queryCommitments(sam, '')).commitments.length, 2)
+})
+
 test('deletion clears bytes, knowledge, and candidates while legal hold does not expand reads', async () => {
   const { setupResult, created } = (await createUploaded())
   await setupResult.platform.startProcessing(alex, 'meeting-1', created.recordingId)
