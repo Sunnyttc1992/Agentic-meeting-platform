@@ -22,6 +22,8 @@ const TRUSTED_PROCESSOR_MODES = new Map([
   ['Local Whisper transcription only', 'local-whisper-transcript-only'],
   ['Local Whisper + pyannote + Claude', 'local-whisper-pyannote-claude'],
   ['Local Whisper + pyannote transcription', 'local-whisper-pyannote-transcript-only'],
+  ['Local Whisper + OpenAI', 'local-whisper-openai'],
+  ['Local Whisper + pyannote + OpenAI', 'local-whisper-pyannote-openai'],
 ])
 // Whisper cannot separate speakers; this label is kept verbatim so the
 // transcript never implies one diarized speaker.

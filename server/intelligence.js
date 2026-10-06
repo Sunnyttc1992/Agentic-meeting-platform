@@ -98,17 +98,56 @@ export function createAnthropicClient(env = process.env, options = {}) {
   return new Anthropic({ ...options, ...(workspaceId ? { defaultHeaders: { 'anthropic-workspace-id': workspaceId } } : {}) })
 }
 
+// Provider-neutral pieces shared by every summary adapter: the same
+// instructions, output schema, transcript rendering, and result normalization,
+// so switching providers never changes what is sent or what is accepted.
+export const MEETING_INTELLIGENCE_INSTRUCTIONS = SYSTEM_PROMPT
+export const MEETING_INTELLIGENCE_SCHEMA = OUTPUT_SCHEMA
+export const EMPTY_MEETING_INTELLIGENCE = Object.freeze({ summary: null, decisions: [], risks: [], questions: [], actions: [] })
+
+export function prepareMeetingPrompt({ segments, participantIds, meetingDate }) {
+  const speakerLabels = new Set(segments.map((segment) => segment.diarizationLabel).filter((label) => SPEAKER_LABEL.test(label ?? '')))
+  const speaker = (segment) => (speakerLabels.has(segment.diarizationLabel) ? segment.diarizationLabel : 'unattributed')
+  const transcript = segments.map((segment) => `[${segment.id} ${formatTimestamp(segment.startMs)}-${formatTimestamp(segment.endMs)} ${speaker(segment)}] ${segment.text}`).join('\n')
+  return {
+    speakerLabels,
+    userContent: `Meeting date: ${meetingDate}\nParticipant IDs: ${participantIds.join(', ')}\n\n<transcript>\n${transcript}\n</transcript>`,
+  }
+}
+
+export function normalizeMeetingIntelligence(parsed, speakerLabels) {
+  const cited = (items) => dedupe((Array.isArray(items) ? items : [])
+    .map((item) => ({ text: String(item?.text ?? '').trim(), citations: Array.isArray(item?.citations) ? item.citations : [] }))
+    .filter((item) => item.text))
+  return {
+    summary: parsed?.summary?.text ? { text: String(parsed.summary.text).trim(), citations: parsed.summary.citations ?? [] } : null,
+    decisions: cited(parsed?.decisions),
+    risks: cited(parsed?.risks),
+    questions: cited(parsed?.open_questions),
+    actions: dedupe((Array.isArray(parsed?.action_plan) ? parsed.action_plan : [])
+      .map((item) => ({
+        text: String(item?.action ?? '').trim(),
+        agreement: AGREEMENTS.has(item?.status) ? item.status : 'proposed',
+        ownerId: String(item?.owner_participant_id ?? '').trim() || null,
+        speakerLabel: speakerLabels.has(item?.speaker_label) ? item.speaker_label : null,
+        deadline: /^\d{4}-\d{2}-\d{2}$/.test(String(item?.due_date ?? '')) ? item.due_date : null,
+        citations: Array.isArray(item?.citations) ? item.citations : [],
+      }))
+      .filter((item) => item.text)),
+  }
+}
+
 export class ClaudeMeetingIntelligence {
+  providerName = 'Claude'
+
   constructor({ client = createAnthropicClient(), model = process.env.MEETING_SUMMARY_MODEL ?? DEFAULT_SUMMARY_MODEL } = {}) {
     this.client = client
     this.model = model
   }
 
   async extract({ segments, participantIds, meetingDate }) {
-    if (segments.length === 0) return { summary: null, decisions: [], risks: [], questions: [], actions: [] }
-    const speakerLabels = new Set(segments.map((segment) => segment.diarizationLabel).filter((label) => SPEAKER_LABEL.test(label ?? '')))
-    const speaker = (segment) => (speakerLabels.has(segment.diarizationLabel) ? segment.diarizationLabel : 'unattributed')
-    const transcript = segments.map((segment) => `[${segment.id} ${formatTimestamp(segment.startMs)}-${formatTimestamp(segment.endMs)} ${speaker(segment)}] ${segment.text}`).join('\n')
+    if (segments.length === 0) return EMPTY_MEETING_INTELLIGENCE
+    const { speakerLabels, userContent } = prepareMeetingPrompt({ segments, participantIds, meetingDate })
     const response = await this.client.beta.messages.create({
       model: this.model,
       max_tokens: 16000,
@@ -116,32 +155,10 @@ export class ClaudeMeetingIntelligence {
       fallbacks: 'default',
       system: SYSTEM_PROMPT,
       output_config: { format: { type: 'json_schema', schema: OUTPUT_SCHEMA } },
-      messages: [{
-        role: 'user',
-        content: `Meeting date: ${meetingDate}\nParticipant IDs: ${participantIds.join(', ')}\n\n<transcript>\n${transcript}\n</transcript>`,
-      }],
+      messages: [{ role: 'user', content: userContent }],
     })
     if (response.stop_reason !== 'end_turn') throw new Error(`Meeting intelligence did not complete (${response.stop_reason})`)
     const text = response.content.filter((block) => block.type === 'text').map((block) => block.text).join('')
-    const parsed = JSON.parse(text)
-    const cited = (items) => dedupe((Array.isArray(items) ? items : [])
-      .map((item) => ({ text: String(item?.text ?? '').trim(), citations: Array.isArray(item?.citations) ? item.citations : [] }))
-      .filter((item) => item.text))
-    return {
-      summary: parsed.summary?.text ? { text: String(parsed.summary.text).trim(), citations: parsed.summary.citations ?? [] } : null,
-      decisions: cited(parsed.decisions),
-      risks: cited(parsed.risks),
-      questions: cited(parsed.open_questions),
-      actions: dedupe((Array.isArray(parsed.action_plan) ? parsed.action_plan : [])
-        .map((item) => ({
-          text: String(item?.action ?? '').trim(),
-          agreement: AGREEMENTS.has(item?.status) ? item.status : 'proposed',
-          ownerId: String(item?.owner_participant_id ?? '').trim() || null,
-          speakerLabel: speakerLabels.has(item?.speaker_label) ? item.speaker_label : null,
-          deadline: /^\d{4}-\d{2}-\d{2}$/.test(String(item?.due_date ?? '')) ? item.due_date : null,
-          citations: Array.isArray(item?.citations) ? item.citations : [],
-        }))
-        .filter((item) => item.text)),
-    }
+    return normalizeMeetingIntelligence(JSON.parse(text), speakerLabels)
   }
 }

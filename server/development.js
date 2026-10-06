@@ -8,6 +8,7 @@ import { createInMemoryMeetingStorage } from './storage.js'
 import { LocalWhisperTranscriber } from './transcription.js'
 import { LocalPyannoteDiarizer } from './diarization.js'
 import { ClaudeMeetingIntelligence } from './intelligence.js'
+import { OpenAIMeetingIntelligence } from './intelligence-openai.js'
 import { RECORDING_MIME_TYPES, SPEECH_WAV_MIME_TYPE } from '../src/recordingFormats.js'
 
 // 16 kHz mono 16-bit WAV is 32 KB/s: 160 MB holds roughly 83 minutes.
@@ -18,7 +19,7 @@ const LOCAL_MAX_RECORDING_BYTES = 160 * 1024 * 1024
 export const DEVELOPMENT_TENANTS = Object.freeze(['northstar'])
 const DEVELOPMENT_RETENTION_POLICIES = Object.freeze([{ tenantId: 'northstar', classification: '*', retainDays: 30 }])
 
-// Summaries are enabled only when Anthropic credentials are actually present,
+// Summaries are enabled only when a provider's credentials are actually present,
 // so a missing key yields an honest "transcription only" result instead of a
 // failed recording. Keys come from the environment (or an `ant auth login`
 // profile); they are never read by, or sent to, the browser.
@@ -30,12 +31,36 @@ export function hasAnthropicCredentials(env = process.env, platform = process.pl
   return existsSync(credentials) && readdirSync(credentials).some((name) => name.endsWith('.json'))
 }
 
+export function hasOpenAICredentials(env = process.env) {
+  return Boolean(String(env.OPENAI_API_KEY ?? '').trim())
+}
+
+// Which provider writes summaries: MEETING_SUMMARY_PROVIDER picks one
+// explicitly ('openai', 'anthropic', or 'none'); otherwise Anthropic when its
+// credentials exist, then OpenAI. A chosen provider without credentials gives
+// an honest transcript-only result, never a silent switch to the other one.
+export function summaryProvider(env = process.env) {
+  const chosen = String(env.MEETING_SUMMARY_PROVIDER ?? '').trim().toLowerCase()
+  if (chosen === 'none') return 'none'
+  if (chosen === 'openai') return hasOpenAICredentials(env) ? 'openai' : 'none'
+  if (chosen === 'anthropic') return hasAnthropicCredentials(env) ? 'anthropic' : 'none'
+  if (hasAnthropicCredentials(env)) return 'anthropic'
+  return hasOpenAICredentials(env) ? 'openai' : 'none'
+}
+
+function createMeetingIntelligence(env) {
+  const provider = summaryProvider(env)
+  if (provider === 'openai') return new OpenAIMeetingIntelligence()
+  if (provider === 'anthropic') return new ClaudeMeetingIntelligence()
+  return null
+}
+
 export function createSpeechProcessor({ mode = process.env.MEETING_PROCESSOR ?? 'local', env = process.env } = {}) {
   if (mode === 'fake') return new FakeSpeechProcessor()
   return new LocalMeetingProcessor({
     transcriber: new LocalWhisperTranscriber(),
     diarizer: new LocalPyannoteDiarizer({ env }),
-    intelligence: hasAnthropicCredentials(env) ? new ClaudeMeetingIntelligence() : null,
+    intelligence: createMeetingIntelligence(env),
   })
 }
 

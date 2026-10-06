@@ -3,8 +3,9 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { FixedClock, InMemoryAppendOnlyAudit, InMemoryKnowledgeRepository, InMemoryMeetingRepository, InMemoryRecordingRepository } from './adapters/in-memory.js'
-import { hasAnthropicCredentials } from './development.js'
+import { hasAnthropicCredentials, summaryProvider } from './development.js'
 import { ClaudeMeetingIntelligence, createAnthropicClient, DEFAULT_SUMMARY_MODEL } from './intelligence.js'
+import { DEFAULT_OPENAI_SUMMARY_MODEL, OpenAIMeetingIntelligence } from './intelligence-openai.js'
 import { isLoopbackRequest, isMeetingApiPath } from './local-only.js'
 import { MeetingIntelligencePlatform } from './platform.js'
 import { PolicyEngine } from './policy.js'
@@ -211,6 +212,66 @@ test('an organization-level key sends its configured workspace ID, and a workspa
   assert.equal((await headersOf({})).get('anthropic-workspace-id'), null)
 })
 
+function fakeOpenAI(payload, { status = 'completed', refusal = false, incompleteReason = null } = {}) {
+  const requests = []
+  return {
+    requests,
+    client: { responses: { create: async (request) => {
+      requests.push(request)
+      const content = refusal ? [{ type: 'refusal', refusal: 'I cannot help with that.' }] : [{ type: 'output_text', text: JSON.stringify(payload), annotations: [] }]
+      return { status, incomplete_details: incompleteReason ? { reason: incompleteReason } : null, output: [{ type: 'message', role: 'assistant', content }], output_text: refusal ? '' : JSON.stringify(payload) }
+    } } },
+  }
+}
+
+test('OpenAI receives the same minimal transcript request, unstored, and its hostile output is defused the same way', async () => {
+  const openai = fakeOpenAI(HOSTILE_RESPONSE)
+  const state = (await pipelineSetup(new OpenAIMeetingIntelligence({ client: openai.client })))
+  const status = await runRecording(state)
+
+  const [request] = openai.requests
+  assert.equal(request.model, DEFAULT_OPENAI_SUMMARY_MODEL)
+  assert.equal(request.store, false, 'the response is never kept in stored-response history')
+  assert.deepEqual(request.text.format.type, 'json_schema')
+  assert.equal(request.text.format.strict, true)
+  const sent = JSON.stringify(request)
+  assert.match(sent, /\[S2 00:04-00:09 unattributed\] Sam, send the security findings by October 20\./)
+  assert.match(sent, /Participant IDs: alex, sam/)
+  assert.match(sent, /Meeting date: 2026-10-03/)
+  assert.doesNotMatch(sent, /northstar|meeting-1|recording-|lease|sha256/, 'no tenant, meeting, recording, or integrity identifiers leave the server')
+
+  assert.equal(status.recording.state, 'completed')
+  assert.equal(status.recording.processor, 'Local Whisper + OpenAI')
+  assert.ok(status.segments.every((segment) => segment.provenance.mode === 'local-whisper-openai'))
+  assert.equal(status.recording.withheldAssertions, 1, 'the decision citing a nonexistent segment is withheld')
+  const [send, everything] = status.assertions.filter((assertion) => assertion.kind === 'action')
+  assert.deepEqual(send.commitment, { ownerId: 'sam', deadline: '2026-10-20T00:00:00.000Z', status: 'open', agreement: 'committed' })
+  assert.deepEqual(everything.commitment, { ownerId: null, deadline: null, status: 'open', agreement: 'proposed' })
+})
+
+test('an OpenAI refusal, truncated reply, or unfinished response fails closed and stores nothing', async () => {
+  for (const openai of [fakeOpenAI(null, { refusal: true }), fakeOpenAI(null, { status: 'incomplete', incompleteReason: 'max_output_tokens' }), fakeOpenAI(null, { status: 'failed' })]) {
+    const state = (await pipelineSetup(new OpenAIMeetingIntelligence({ client: openai.client })))
+    const status = await runRecording(state)
+    assert.equal(status.recording.state, 'failed')
+    assert.equal(status.recording.error, 'PROCESSOR_FAILED')
+    assert.deepEqual((await state.platform.queryCommitments(alex, '', 'corr')).commitments, [])
+  }
+})
+
+test('the summary provider is explicit when chosen and never silently switches to the other one', () => {
+  const anthropic = { ANTHROPIC_API_KEY: 'a' }
+  const openai = { OPENAI_API_KEY: 'o' }
+  const isolate = { ANTHROPIC_CONFIG_DIR: 'Z:/no-such-anthropic-profile' }
+  assert.equal(summaryProvider({ ...isolate, ...anthropic, ...openai, MEETING_SUMMARY_PROVIDER: 'openai' }), 'openai')
+  assert.equal(summaryProvider({ ...isolate, ...anthropic, ...openai, MEETING_SUMMARY_PROVIDER: 'none' }), 'none')
+  assert.equal(summaryProvider({ ...isolate, ...anthropic, MEETING_SUMMARY_PROVIDER: 'openai' }), 'none', 'a chosen provider without a key stays transcript-only')
+  assert.equal(summaryProvider({ ...isolate, ...openai, MEETING_SUMMARY_PROVIDER: ' OpenAI ' }), 'openai')
+  assert.equal(summaryProvider({ ...isolate, ...anthropic, ...openai }), 'anthropic', 'without a choice the existing Anthropic default is kept')
+  assert.equal(summaryProvider({ ...isolate, ...openai }), 'openai')
+  assert.equal(summaryProvider({ ...isolate }), 'none')
+})
+
 test('a Claude refusal or malformed reply fails closed with only PROCESSOR_FAILED and stores nothing', async () => {
   for (const claude of [fakeClaude(null, { stopReason: 'refusal' }), fakeClaude(null, { stopReason: 'max_tokens' })]) {
     const state = (await pipelineSetup(new ClaudeMeetingIntelligence({ client: claude.client })))
@@ -273,12 +334,16 @@ test('pipeline readiness is value-free and never initializes models or contacts 
       modelCached: () => { cacheChecks += 1; return false },
       anthropicConfigured: (env) => { credentialChecks += 1; return Boolean(env.ANTHROPIC_API_KEY) },
       diarization: () => ({ configured: true, runtimeAvailable: true, modelReady: true, modelDir: canary }),
+      openAIConfigured: () => true,
+      provider: () => canary,
     }).inspect({ teamsReadiness: { connection: 'not-connected', oauth: { clientId: canary } } })
     assert.deepEqual(readiness, {
       scope: 'loopback-only',
       whisper: { runtimeAvailable: true, modelCacheReady: false },
       diarization: { configured: true, runtimeAvailable: true, modelReady: true },
+      summaries: { provider: 'none' },
       anthropic: { credentialsConfigured: true },
+      openai: { credentialsConfigured: true },
       teams: { connection: 'not-connected' },
     })
     assert.deepEqual([runtimeChecks, cacheChecks, credentialChecks], [1, 1, 1])
@@ -311,13 +376,16 @@ test('pipeline readiness honestly reports missing local Anthropic configuration 
       credentialChecks += 1
       return Boolean(env.ANTHROPIC_API_KEY)
     },
+    provider: () => 'none',
   }).inspect({ teamsReadiness: { connection: 'not-connected' } })
 
   assert.deepEqual(readiness, {
     scope: 'loopback-only',
     whisper: { runtimeAvailable: true, modelCacheReady: false },
     diarization: { configured: false, runtimeAvailable: false, modelReady: false },
+    summaries: { provider: 'none' },
     anthropic: { credentialsConfigured: false },
+    openai: { credentialsConfigured: false },
     teams: { connection: 'not-connected' },
   })
   assert.equal(credentialChecks, 1)

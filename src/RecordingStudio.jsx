@@ -107,8 +107,13 @@ const displayTime = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2,
 const PROCESSOR_COPY = {
   "local-deterministic-fake": { label: "LOCAL DETERMINISTIC PROCESSOR" },
   "local-whisper-claude": { label: "LOCAL WHISPER · CLAUDE" },
+  "local-whisper-openai": { label: "LOCAL WHISPER · OPENAI" },
   "local-whisper-transcript-only": { label: "LOCAL WHISPER" },
+  "local-whisper-pyannote-claude": { label: "LOCAL WHISPER · PYANNOTE · CLAUDE" },
+  "local-whisper-pyannote-openai": { label: "LOCAL WHISPER · PYANNOTE · OPENAI" },
+  "local-whisper-pyannote-transcript-only": { label: "LOCAL WHISPER · PYANNOTE" },
 }
+const TRANSCRIPT_ONLY_MODES = new Set(["local-whisper-transcript-only", "local-whisper-pyannote-transcript-only"])
 const participantName = (id) => participants.find((person) => person.id === id)?.name ?? id
 // An owner is shown only when the meeting named a participant; otherwise the
 // anonymous label of the speaker who took the task on, marked unverified.
@@ -133,9 +138,9 @@ export function MeetingIntelligenceResult({ result, onDownload = null }) {
   const withheld = result?.recording?.withheldAssertions ?? 0
   return <div className="processing-complete" data-processor-mode={mode ?? "unknown"}>
     <p className="stage-index">{label} · COMPLETE</p>
-    <h2>{mode === "local-whisper-transcript-only" ? "Meeting transcript" : "Cited meeting intelligence"}</h2>
+    <h2>{TRANSCRIPT_ONLY_MODES.has(mode) ? "Meeting transcript" : "Cited meeting intelligence"}</h2>
     {onDownload && segments.length > 0 && <button className="copper-button result-download" onClick={onDownload}>Download meeting record</button>}
-    {mode === "local-whisper-transcript-only" && <p className="intelligence-note">Summary and action plan are not configured on this server. Set <code>ANTHROPIC_API_KEY</code> and restart it to generate them.</p>}
+    {TRANSCRIPT_ONLY_MODES.has(mode) && <p className="intelligence-note">Summary and action plan are not configured on this server. Set <code>OPENAI_API_KEY</code> or <code>ANTHROPIC_API_KEY</code> and restart it to generate them.</p>}
     {segments.length === 0 && <p className="intelligence-note">No speech was recognized in this recording.</p>}
     {withheld > 0 && <p className="intelligence-note">{withheld} generated {withheld === 1 ? "item was" : "items were"} withheld because {withheld === 1 ? "it" : "they"} could not be tied to this transcript.</p>}
     {summary && <section className="intelligence-summary"><span>Executive summary</span><p>{summary.text}</p><small>Sources {sources(summary.citations)}</small></section>}
@@ -378,7 +383,7 @@ export function RecordingStudio({ onBack }) {
     let blob=captureRef.current.blob(); if(!blob||!state.leaseId)return
     const transcribes = state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE)
     if(!window.confirm(transcribes
-      ? "Transcribe this recording?\n\nThe audio is converted and transcribed on this machine and is never sent elsewhere. If summaries are configured, the transcript text with anonymous speaker labels (not the audio or any voice data) is sent to Anthropic's Claude API to write the summary and action plan."
+      ? "Transcribe this recording?\n\nThe audio is converted and transcribed on this machine and is never sent elsewhere. If summaries are configured, the transcript text with anonymous speaker labels (not the audio or any voice data) is sent to the AI provider configured on this server (OpenAI or Anthropic's Claude) to write the summary and action plan."
       : "Upload this in-memory recording to the local development processor?"))return
     dispatch({type:"PROCESS_CONFIRM"})
     try {
@@ -434,7 +439,7 @@ export function RecordingStudio({ onBack }) {
         <p className="eyebrow">TRUST CONTROLS</p>
         <dl><div><dt>Meeting policy</dt><dd><ShieldCheck /> Preflight enforced</dd></div><div><dt>{mockMode ? "Capture source" : "Microphone"}</dt><dd><Microphone aria-hidden="true" /> {mockMode ? "Synthetic fixture · no microphone/audio" : streamRef.current ? "Connected" : "Not active"}</dd></div><div><dt>Authorization lease</dt><dd>{state.authorizationExpiresAt ? `${displayTime(remaining)} remaining` : "Not issued"}</dd></div><div><dt>Storage</dt><dd>{mockMode ? "No audio retained" : "In-memory only"}</dd></div></dl>
         {state.phase === "recording" && <div className="withdraw-box"><b>Consent changed?</b><p>Any participant can withdraw. Capture stops immediately and audio is cleared.</p>{participants.map((person) => <button key={person.id} onClick={() => setConsent(person.id, "withdrawn")}>Withdraw for {person.name}</button>)}</div>}
-        <small>{state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "Audio is transcribed on this machine by Whisper and never leaves it. When configured, only the transcript text and anonymous speaker labels are sent to Claude to write the cited summary and action plan." : "Local deterministic processor is a clearly labeled fake. It demonstrates provenance, identity confidence, and citations; it does not claim real STT or diarization."}</small>
+        <small>{state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "Audio is transcribed on this machine by Whisper and never leaves it. When configured, only the transcript text and anonymous speaker labels are sent to the configured AI provider (OpenAI or Claude) to write the cited summary and action plan." : "Local deterministic processor is a clearly labeled fake. It demonstrates provenance, identity confidence, and citations; it does not claim real STT or diarization."}</small>
       </aside>
     </section>
   </main>

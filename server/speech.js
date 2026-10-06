@@ -14,27 +14,31 @@ export const LOCAL_SPEECH_PROCESSOR_LABELS = Object.freeze({
   transcriptOnly: 'Local Whisper transcription only',
   diarizedFull: 'Local Whisper + pyannote + Claude',
   diarizedTranscriptOnly: 'Local Whisper + pyannote transcription',
+  openAIFull: 'Local Whisper + OpenAI',
+  openAIDiarizedFull: 'Local Whisper + pyannote + OpenAI',
 })
 
 // Real pipeline: Whisper transcribes on this machine, then (when credentials
-// are configured) Claude writes the cited summary and action plan from that
-// transcript. The platform normalizes and re-validates the whole result.
+// are configured) Claude or OpenAI writes the cited summary and action plan
+// from that transcript. The platform normalizes and re-validates the whole result.
 export class LocalMeetingProcessor {
   constructor({ transcriber, diarizer = null, intelligence = null, now = () => new Date() }) {
     this.transcriber = transcriber
     this.diarizer = diarizer?.enabled ? diarizer : null
     this.intelligence = intelligence
     this.now = now
+    // The label names the provider that actually writes the summary.
+    const openAI = intelligence?.providerName === 'OpenAI'
     this.name = this.diarizer
-      ? (intelligence ? LOCAL_SPEECH_PROCESSOR_LABELS.diarizedFull : LOCAL_SPEECH_PROCESSOR_LABELS.diarizedTranscriptOnly)
-      : (intelligence ? LOCAL_SPEECH_PROCESSOR_LABELS.full : LOCAL_SPEECH_PROCESSOR_LABELS.transcriptOnly)
+      ? (intelligence ? (openAI ? LOCAL_SPEECH_PROCESSOR_LABELS.openAIDiarizedFull : LOCAL_SPEECH_PROCESSOR_LABELS.diarizedFull) : LOCAL_SPEECH_PROCESSOR_LABELS.diarizedTranscriptOnly)
+      : (intelligence ? (openAI ? LOCAL_SPEECH_PROCESSOR_LABELS.openAIFull : LOCAL_SPEECH_PROCESSOR_LABELS.full) : LOCAL_SPEECH_PROCESSOR_LABELS.transcriptOnly)
   }
 
   async process({ bytes, participantIds = [] }) {
     const transcribed = await this.transcriber.transcribe(bytes)
     const labeled = this.diarizer ? applyDiarizationLabels(transcribed, await this.diarizer.diarize(bytes)) : transcribed
     // Number anonymous labels by first appearance, the same order the platform
-    // stores, so a label Claude cites on an action matches the transcript.
+    // stores, so a label the model cites on an action matches the transcript.
     const ordered = new Map()
     const ordinal = (label) => {
       if (!label || label === 'UNATTRIBUTED') return 'UNATTRIBUTED'

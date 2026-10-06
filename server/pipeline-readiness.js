@@ -2,7 +2,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { hasAnthropicCredentials } from './development.js'
+import { hasAnthropicCredentials, hasOpenAICredentials, summaryProvider } from './development.js'
 
 const require = createRequire(import.meta.url)
 const defaultCacheDir = fileURLToPath(new URL('../.cache/models', import.meta.url))
@@ -75,9 +75,14 @@ function diarizationState(inspect) {
   return { configured: state.configured === true, runtimeAvailable: state.runtimeAvailable === true, modelReady: state.modelReady === true }
 }
 
+const SUMMARY_PROVIDERS = new Set(['anthropic', 'openai', 'none'])
+function summaryProviderName(check) {
+  try { const name = check(); return SUMMARY_PROVIDERS.has(name) ? name : 'none' } catch { return 'none' }
+}
+
 // This probe is intentionally side-effect free. It reports readiness, not a
 // live health check: it never initializes Whisper, downloads model weights,
-// opens a connection to Anthropic, reads credential values, or sends audio.
+// opens a connection to Anthropic or OpenAI, reads credential values, or sends audio.
 export function createPipelineReadiness({
   env = process.env,
   model = env.WHISPER_MODEL ?? defaultModel,
@@ -85,6 +90,8 @@ export function createPipelineReadiness({
   runtimeAvailable = hasLocalWhisperRuntime,
   modelCached = hasCachedWhisperModel,
   anthropicConfigured = hasAnthropicCredentials,
+  openAIConfigured = hasOpenAICredentials,
+  provider = summaryProvider,
   diarization = inspectLocalDiarization,
 } = {}) {
   return Object.freeze({
@@ -97,7 +104,9 @@ export function createPipelineReadiness({
           modelCacheReady: safeBoolean(() => modelCached({ cacheDir, model })),
         }),
         diarization: Object.freeze(diarizationState(() => diarization({ env }))),
+        summaries: Object.freeze({ provider: summaryProviderName(() => provider(env)) }),
         anthropic: Object.freeze({ credentialsConfigured: safeBoolean(() => anthropicConfigured(env)) }),
+        openai: Object.freeze({ credentialsConfigured: safeBoolean(() => openAIConfigured(env)) }),
         teams: Object.freeze({ connection: teamsNotConnected ? 'not-connected' : 'unavailable' }),
       })
     },
