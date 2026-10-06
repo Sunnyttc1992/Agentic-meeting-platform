@@ -49,3 +49,14 @@ Do not reuse another computer's `.env`, PostgreSQL passwords, database files, au
 - A local database backup and the matching audio-key backup must remain on the same computer's approved protected storage; neither is a way to sync meetings to another prototype computer.
 
 Moving from these separate installations to one shared service requires the production-launch gates, including Entra identity and external-network approval. See [production-launch-gate.md](production-launch-gate.md).
+
+## Simulated clean install (2026-10-06)
+
+Run on the development computer in a temporary folder, without touching its PostgreSQL instance. It is not a substitute for the clean second-computer test.
+
+- `npm run prototype:export` produced a 146-file archive whose SHA-256 sidecar matched. It contained no `.env`, `.data`, keys, certificates, SQLite files, caches, `node_modules`, `dist`, Git history, or local-only agent folders; the only credential-shaped strings were the commented `CHANGE_ME` placeholders in `.env.example`.
+- The archive stored entry paths with backslashes (a `Compress-Archive` behaviour that non-Windows extractors reject). The exporter now writes forward-slash entry names; `unzip -t` and `Expand-Archive` both accept the new archive.
+- The unpacked installer, run with `-SkipPostgresWizard` and a placeholder `.env`, completed `npm ci` from the lockfile and the production build in 34 seconds.
+- The unpacked server (SQLite, no `.env`) listened only on `127.0.0.1`, returned `403 LOCAL_ONLY` for a rebinding `Host` header on reads and writes, refused connections on the computer's LAN address, created a meeting over loopback, and generated its own master and per-recording key material, different from the existing installation's.
+
+Still required on a clean second computer: the PostgreSQL wizard end to end, Whisper model download, and the optional diarization provisioning.
