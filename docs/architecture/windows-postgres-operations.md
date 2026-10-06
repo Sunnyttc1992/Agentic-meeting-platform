@@ -121,6 +121,18 @@ Every stored recording records its key version, but the current server accepts o
 - Treat suspected key compromise as an incident: restrict access, preserve evidence, assess affected recordings, and obtain security approval before any recovery or rotation action.
 - Implement and test a multi-key read / new-key write / transactional re-encryption / rollback / disposal workflow before claiming automated key rotation.
 
+## 7. Deletion reconciliation and vacuum
+
+PostgreSQL `DELETE` makes application rows inaccessible immediately, but leaves dead tuples until vacuum reclaims them. The recording payload is AES-256-GCM ciphertext, yet the current server uses one active audio key; vacuum is therefore an operational deletion control, not a cryptographic erasure guarantee.
+
+- Run the application retention sweep before database maintenance. It creates the content-free tombstone and removes recording content, transcripts, assertions, and derived commitments through the normal audited path.
+- Run `VACUUM (ANALYZE)` at least daily under the PostgreSQL maintenance/owner account, during the organization-approved low-traffic window. Use `VACUUM (VERBOSE, ANALYZE)` only when the operator needs a protected diagnostic log; its output must not be copied into application logs.
+- Use `VACUUM FULL` only after a reviewed incident or a measured bloat assessment. It requires an exclusive table lock and must be scheduled as a maintenance window; do not run it from the application process or while recording/processing is active.
+- Keep logical backup retention time-bounded and encrypted. A restored backup is never served until the retention/deletion reconciliation in section 4 completes and an operator records its result.
+- Record the sweep completion time, vacuum command result, database size before/after where available, backup-rotation state, and approving operator in the protected operations record. Do not put meeting IDs, transcript text, audio identifiers, database URLs, or credentials in that record.
+
+This procedure reduces normal PostgreSQL dead-tuple exposure. Per-recording data keys with tested crypto-shredding remain the stronger future control for rapid selective erasure.
+
 ## Repeatable setup
 
 Run `bash scripts/setup-windows-postgres.sh` from Git Bash or WSL to walk through the manual stages. It writes only `DATABASE_URL` and `MEETING_AUDIO_KEY_FILE` to the Git-ignored `.env`; it never persists the owner URL or key bytes.

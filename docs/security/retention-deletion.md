@@ -56,7 +56,7 @@ Manual deletion and retention expiry both run `#disposeMeetingContent`. Every st
 | Audit log and outbox | Content-free events | Kept (append-only by design) | audit tests |
 | Diarization temporary directory | Plaintext WAV and turn JSON for one job | Removed in `finally` after every job | `server/diarization.test.js` |
 | Browser memory | In-progress capture | Discarded on stop, discard, policy stop, or sensitive-topic stop | studio tests |
-| **Outside the app:** PostgreSQL dead tuples | Deleted rows until `VACUUM` | Audio is ciphertext, but under one shared key. Production should add per-recording data keys (crypto-shredding) or a scheduled `VACUUM` with a documented window | not yet implemented |
+| **Outside the app:** PostgreSQL dead tuples | Deleted rows until `VACUUM` | Daily owner-run `VACUUM (ANALYZE)` after retention sweep; `VACUUM FULL` only in an approved maintenance window. See Windows operations guide. | operator procedure; crypto-shredding remains future work |
 | **Outside the app:** PostgreSQL backups | Point-in-time copies | Expire with the backup rotation; a restore must run deletion reconciliation before serving (see `docs/architecture/windows-postgres-operations.md`) | operator procedure |
 | **Outside the app:** downloaded exports | Markdown files a participant saved | Cannot be recalled; the export is marked confidential and audited | `meeting.export` audit |
 | **Outside the app:** summary provider | Transcript sent for summarization | OpenAI: `store: false` (no stored-response retrieval); provider abuse-monitoring retention per contract. Anthropic: default API retention per contract. Both need the approval packets before real meetings | approval packets |
