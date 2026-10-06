@@ -5,7 +5,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 ## Project and checkpoint
 
 - Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
-- Latest checkpoint: `5390d5a Add per-computer local prototype distribution`.
+- Latest code checkpoint: `9a6a37d Normalize timestamps in prototype export` (feature delivery began at `5390d5a`).
 - The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
 - Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
@@ -36,6 +36,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 12. Cross-device capture stop: authenticated participants can poll the minimal `GET /meetings/:id/recording/authorization-status` capability. The studio checks it every 5 seconds while recording and discards local capture when it becomes inactive; no lease is disclosed or refreshed by this endpoint.
 13. Production launch is explicitly gated in `docs/operations/production-launch-gate.md`; it lists the Windows, Entra, Teams, provider-approval, and release-evidence conditions that require organization action.
 14. Per-computer prototype distribution: `npm run prototype:export` creates a reviewed-source ZIP and SHA-256 sidecar without secrets, data, caches, build output, dependencies, or Git history. Each recipient runs `scripts/install-local-prototype.ps1`, which installs pinned dependencies, invokes the existing PostgreSQL setup wizard only when needed, and builds the bundle. `scripts/start-local-prototype.ps1` starts the resulting instance only at `localhost`/`127.0.0.1`. See `docs/operations/local-prototype-distribution.md`.
+    - The exporter packages only tracked files, refuses a dirty tracked release, and normalizes timestamps in its disposable staging directory for Windows `Compress-Archive` compatibility.
 
 ## Validation at this checkpoint
 
@@ -43,6 +44,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 - `npm run build`: passed.
 - `npm run test:sites`: **4/4 passing**.
 - Parsed all three new PowerShell scripts and ran `bash -n scripts/setup-windows-postgres.sh`.
+- Export smoke test produced a 134-entry ZIP with the installer/run scripts and `.env.example`, while excluding real `.env` files, `.data`, keys, model caches, dependencies, build output, and Git history. A PostgreSQL-backed local preview also returned `200` from authenticated `/pipeline/readiness` on loopback.
 - Durable SQLite, PostgreSQL/PGlite, and node-postgres wire-protocol suites passed after the audit-boundary change.
 - `git diff --check`: passed before committing `341808e`.
 - Earlier validation also passed `python -m py_compile server/diarize_worker.py` and `bash -n scripts/setup-windows-diarization.sh`.
