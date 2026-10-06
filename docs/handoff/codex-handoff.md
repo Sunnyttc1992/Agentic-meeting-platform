@@ -105,11 +105,10 @@ Git: branch `master`; all work is committed. The untracked paths `.copilot/`, `.
 
 ## Current state of the local machine
 
-- **`.env`** (key names only): `ANTHROPIC_WORKSPACE_ID`, `MEETING_SUMMARY_PROVIDER=openai`, `OPENAI_API_KEY`, `DIARIZATION_PYTHON`, `DIARIZATION_MODEL_DIR`, `MEETING_DIARIZATION_TEMP_DIR`, `MEETING_AUDIO_KEY_FILE`.
-  - **`DATABASE_URL` is missing.** The user overwrote `.env` from `.env.example` during key setup, and the database password is the user's to restore.
-  - Until it is restored, a restarted server uses local SQLite, not PostgreSQL.
-  - Ask the user to add it with a hidden-input PowerShell prompt; never ask them to paste it in chat.
-- **Preview server:** one is still running on `127.0.0.1:4174` with the **old code and old settings** loaded in memory (PostgreSQL). Restart it only after `DATABASE_URL` is back. Use `PORT=4174`, `node --env-file-if-exists=.env server/local-preview.js`.
+- **`.env`** (key names only): `ANTHROPIC_WORKSPACE_ID`, `MEETING_SUMMARY_PROVIDER=openai`, `OPENAI_API_KEY`, `DIARIZATION_PYTHON`, `DIARIZATION_MODEL_DIR`, `MEETING_DIARIZATION_TEMP_DIR`, `MEETING_AUDIO_KEY_FILE`, `DATABASE_URL`.
+  - `DATABASE_URL` was restored on 2026-10-06. It uses `meeting_app` at `localhost:5434/meeting_ledger` with `sslmode=verify-full` and `sslrootcert=C:/ProgramData/MeetingLedger/certs/root-ca.pem`.
+  - PostgreSQL 18 runs as the Windows service `postgresql-x64-18`, listening on loopback only, with a certificate for `localhost`.
+- **Preview server:** running on `127.0.0.1:4174` with the current code. On 2026-10-06 it reported `storage: PostgreSQL (DATABASE_URL)`, all readiness checks were true, the summary provider was `openai`, and a non-loopback Host header was refused with 403. Restart it with `PORT=4174`, `node --env-file-if-exists=.env server/local-preview.js`.
 - **Browser automation:** unavailable in the previous sessions. Use HTTP checks against a temporary instance (for example `PORT=4180`, `MEETING_DATA_DIR=<scratch>`, `MEETING_SUMMARY_PROVIDER=none`).
 
 ## Validation baseline
