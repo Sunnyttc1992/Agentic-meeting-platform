@@ -6,8 +6,8 @@ Read this whole file, then AGENTS.md, before changing the project.
 
 - Repository: D:\Data Science Project\smart-meeting-platform
 - Branch: master
-- Last committed implementation checkpoint: b5931f7 Add local offline diarization worker
-- Current in-progress, uncommitted work: scripts/setup-windows-diarization.sh, an executable Git-Bash setup wizard; a small worker correction that prefers Community-1's exclusive diarization output; and a README link to the wizard.
++ Last committed implementation checkpoint: 771c4ec Add Windows diarization provisioning wizard
++ The diarization worker, Windows provisioning wizard, worker correction, README link, and this handoff are committed. The worktree should be clean except for the intentionally untracked local-only paths listed below.
 - Do not commit unrelated pre-existing untracked paths: .copilot/, .github/skills/secret-handling/, .npmrc, .prototype-seed/, .squad/, .vscode/, design-qa.md, or implementation-1440x1024.png.
 
 The user explicitly approved the local pyannote Community-1 pilot. Microsoft Entra remains deferred until the company decides on rollout. PostgreSQL remains self-hosted and local on Windows; do not switch to Supabase or another hosted database. The app stays loopback-only.
