@@ -26,7 +26,7 @@ This service must remain loopback-only until every applicable gate below has an 
 ## Evidence required before launch
 
 - [ ] Current full automated suite, production build, and Sites packaging pass from the release commit.
-- [ ] A consented synthetic end-to-end run proves recording, local transcription, diarization, permitted summary processing, citations, retrieval, stop/discard, deletion, audit integrity, backup, and restore reconciliation.
+- [ ] A consented synthetic end-to-end run proves recording, local transcription, diarization, permitted summary processing, citations, retrieval, stop/discard, deletion, audit integrity, backup, and restore reconciliation. `npm run smoke:browser` is the isolated browser capture portion only; it does not replace the complete processing/restore drill.
 - [ ] Security owner signs the release evidence and records the release commit, environment, time, and rollback plan in the protected operations record.
 
 ## Repeatable technical evidence
@@ -38,5 +38,13 @@ npm run verify:release -- --preview=4173
 ```
 
 The command runs the full automated suite, build, and Sites packaging check; verifies the required output files; checks an already-running loopback preview when `--preview` is supplied; and prints a JSON evidence record without reading or printing `.env`, connection strings, passwords, API keys, audio-key bytes, transcript text, or meeting data. Capture that output in the protected operations record with the release commit. A `technical-evidence-passed` verdict does **not** complete any manual launch gate above.
+
+For a browser-level synthetic capture check that cannot use the configured database, run:
+
+```powershell
+npm run smoke:browser
+```
+
+It starts a temporary SQLite-backed loopback server **without loading `.env`**, drives headless Chrome through creating a meeting, consent, policy check, microphone capture, and stop/review, then stops the server and deletes its temporary SQLite data. Do not add `--process` unless the local Whisper runtime is intentionally being exercised; never point the smoke runner at a server that holds real meetings.
 
 Do not record or process real meeting content, enable Teams, or expose the API externally until all relevant boxes are complete.

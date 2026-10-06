@@ -14,6 +14,7 @@
     "db:migrate": "node --env-file-if-exists=.env server/db-migrate.js",
     "eval:summaries": "node --env-file-if-exists=.env scripts/eval-meeting-intelligence.mjs",
     "verify:release": "node scripts/verify-release-evidence.mjs",
+    "smoke:browser": "powershell -ExecutionPolicy Bypass -File scripts/run-studio-browser-smoke.ps1",
     "prototype:export": "powershell -ExecutionPolicy Bypass -File scripts/export-local-prototype.ps1"
   },
   "dependencies": {

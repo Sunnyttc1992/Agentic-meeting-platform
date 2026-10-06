@@ -126,7 +126,7 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 
 | ID | M | P / O evidence today | Main gap |
 |---|---|---|---|
-| CAP-01 | done | Real browser microphone capture on loopback | Conferencing capture |
+| CAP-01 | done | Isolated headless Chrome consent-to-capture smoke on loopback | Conferencing capture |
 | CAP-02 | done | Studio polls minimal authorization status every 5 seconds and discards on revocation | Measured remote-device latency |
 | CAP-03 | partial | none | Teams connector intentionally unconnected |
 | CAP-04 | partial | Local pyannote run on synthetic two-voice audio | Overlap/crosstalk fixtures; real-audio quality benchmark |
