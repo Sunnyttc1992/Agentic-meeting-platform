@@ -252,7 +252,10 @@ if [[ -d "$MODEL_DIR/.git" ]]; then
   note "A model Git repository already exists at the selected path; it will not be changed."
 else
   git lfs install
-  git -c credential.helper= clone https://hf.co/pyannote/speaker-diarization-community-1 "$MODEL_DIR"
+  # Prompt in this terminal: VS Code's terminal otherwise routes the
+  # credential prompt to an editor pop-up via GIT_ASKPASS.
+  env -u GIT_ASKPASS -u SSH_ASKPASS -u VSCODE_GIT_ASKPASS_MAIN -u VSCODE_GIT_ASKPASS_NODE GIT_TERMINAL_PROMPT=1 \
+    git -c credential.helper= -c core.askPass= clone https://hf.co/pyannote/speaker-diarization-community-1 "$MODEL_DIR"
 fi
 
 stage "Prove offline execution and configure the server"
