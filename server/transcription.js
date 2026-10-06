@@ -2,6 +2,44 @@ import { fileURLToPath } from 'node:url'
 import { parseSpeechWav } from './wav.js'
 
 const defaultCacheDir = fileURLToPath(new URL('../.cache/models', import.meta.url))
+const STOCK_SILENCE_HALLUCINATION = /^(?:thank you|thanks for watching)[.!?]*$/i
+const FRAME_SAMPLES = 320 // 20 ms at the validated 16 kHz input rate
+
+function clipSamples(samples, startMs, endMs, durationMs) {
+  const start = Math.max(0, Math.min(samples.length, Math.floor((startMs / durationMs) * samples.length)))
+  const end = Math.max(start, Math.min(samples.length, Math.ceil((endMs / durationMs) * samples.length)))
+  return samples.subarray(start, end)
+}
+
+// This is intentionally not a general voice-activity detector. It only
+// identifies two artefacts that make Whisper emit stock phrases in our
+// microphone fixture: silence and a steady sine wave. A real phrase remains
+// eligible when its amplitude or zero-crossing pattern varies like speech.
+function isSilentOrSteadyTone(samples) {
+  if (samples.length < FRAME_SAMPLES) return true
+  const rms = []
+  const crossings = []
+  for (let offset = 0; offset + FRAME_SAMPLES <= samples.length; offset += FRAME_SAMPLES) {
+    let energy = 0
+    let crossingCount = 0
+    let previous = samples[offset]
+    for (let index = offset; index < offset + FRAME_SAMPLES; index += 1) {
+      const current = samples[index]
+      energy += current * current
+      if ((current >= 0) !== (previous >= 0)) crossingCount += 1
+      previous = current
+    }
+    rms.push(Math.sqrt(energy / FRAME_SAMPLES))
+    crossings.push(crossingCount / FRAME_SAMPLES)
+  }
+  const mean = (values) => values.reduce((total, value) => total + value, 0) / values.length
+  const meanRms = mean(rms)
+  if (meanRms < 0.01) return true
+  const variation = (values, average) => Math.sqrt(mean(values.map((value) => (value - average) ** 2))) / Math.max(average, 0.0001)
+  const meanCrossings = mean(crossings)
+  const active = rms.filter((value) => value >= 0.015).length / rms.length
+  return active >= 0.95 && variation(rms, meanRms) < 0.08 && meanCrossings > 0.005 && variation(crossings, meanCrossings) < 0.08
+}
 
 // Whisper runs in this Node process (ONNX via transformers.js). Meeting audio
 // never leaves the machine; the only network access is the one-time model
@@ -48,6 +86,7 @@ export class LocalWhisperTranscriber {
       const boundedStart = Math.max(startMs, previousEnd)
       const endMs = Math.min(durationMs, Math.max(boundedStart + 1, Math.round((Number.isFinite(end) ? end : durationMs / 1000) * 1000)))
       if (endMs <= boundedStart) continue
+      if (STOCK_SILENCE_HALLUCINATION.test(text) && isSilentOrSteadyTone(clipSamples(samples, boundedStart, endMs, durationMs))) continue
       segments.push({ startMs: boundedStart, endMs, text })
     }
     return segments

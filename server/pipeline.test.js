@@ -63,6 +63,23 @@ test('the Whisper transcriber drops silence chunks and keeps segments ordered an
   await assert.rejects(transcriber.transcribe(Buffer.from('not audio')), { code: 'INVALID_MEDIA' })
 })
 
+test('the Whisper transcriber drops stock silence hallucinations from silent or steady-tone audio only', async () => {
+  const hallucination = async () => ({ chunks: [{ timestamp: [0, 1], text: 'Thank you.' }] })
+  for (const samples of [new Float32Array(16_000), tone(1)]) {
+    const transcriber = new LocalWhisperTranscriber({ loadPipeline: async () => hallucination })
+    assert.deepEqual(await transcriber.transcribe(Buffer.from(encodeWavPcm16(samples))), [])
+  }
+
+  const voicedLikeSamples = Float32Array.from({ length: 16_000 }, (_, index) => {
+    const envelope = 0.04 + 0.18 * ((Math.sin(index / 731) + 1) / 2)
+    return envelope * Math.sin(index / (5 + (index % 23)))
+  })
+  const transcriber = new LocalWhisperTranscriber({ loadPipeline: async () => hallucination })
+  assert.deepEqual(await transcriber.transcribe(Buffer.from(encodeWavPcm16(voicedLikeSamples))), [
+    { startMs: 0, endMs: 1000, text: 'Thank you.' },
+  ])
+})
+
 function fakeClaude(payload, { stopReason = 'end_turn' } = {}) {
   const requests = []
   return {
