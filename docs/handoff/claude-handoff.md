@@ -33,6 +33,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 10. Bounded prior-meeting retrieval: `POST /ai/retrieve` now requires a non-empty bounded query and optional limit (1-8). It applies tenant scope and meeting authorization before reading each candidate, returns only matched transcript/assertion excerpts (each with citations), and records content-free `ai.retrieve` source-selection audit events. It is lexical—not vector RAG—and is not connected to an LLM prompt.
 11. PostgreSQL deletion operations: Windows operators now run the audited retention sweep followed by daily `VACUUM (ANALYZE)` in an approved window; `VACUUM FULL` is reserved for reviewed maintenance. This reduces dead-tuple exposure but does not replace future per-recording crypto-shredding.
 12. Cross-device capture stop: authenticated participants can poll the minimal `GET /meetings/:id/recording/authorization-status` capability. The studio checks it every 5 seconds while recording and discards local capture when it becomes inactive; no lease is disclosed or refreshed by this endpoint.
+13. Production launch is explicitly gated in `docs/operations/production-launch-gate.md`; it lists the Windows, Entra, Teams, provider-approval, and release-evidence conditions that require organization action.
 
 ## Validation at this checkpoint
 
