@@ -5,7 +5,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 ## Project and checkpoint
 
 - Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
-- Latest functional code checkpoint: `3ae7fa2 Assert browser processing smoke outcome` (feature delivery began at `5390d5a`). The commit that updates this handoff follows it.
+- Latest functional code checkpoint: `28774ea Expose safe local request diagnostics` (feature delivery began at `5390d5a`). The commit that updates this handoff follows it.
 - The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
 - Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
@@ -42,6 +42,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 17. PostgreSQL recording audio now has a live key-file availability boundary. Startup refuses a missing/invalid key; each audio read/write re-verifies the configured file and rejects a missing, malformed, or changed key with `RECORDING_CONTENT_UNAVAILABLE` before writing ciphertext or returning audio. The file is pinned to its startup value, so an in-place replacement is treated as an outage rather than an unsafe pseudo-rotation. This is not a KMS/HSM or automatic rotation implementation.
 18. `npm run verify:release -- --preview=4173` now produces a secret-free JSON release-evidence record. It runs `npm test`, the production build, and Sites package tests; verifies the required build artifacts; optionally checks the already-running loopback shell; records the release commit and clean tracked-worktree state; and lists the organization-controlled launch gates separately. It deliberately does not inspect `.env`, credentials, keys, transcripts, or meeting data.
 19. `npm run smoke:browser` starts a temporary SQLite-backed loopback preview **without loading `.env`**, drives headless Chrome through the real workspace's create-meeting, consent, preflight, microphone capture, stop, and local-review sequence, then terminates the server and deletes the temporary data. It asserts the local review player is present. `npm run smoke:browser -- -ProcessRecording` additionally confirms the synthetic audio, then asserts completed local Whisper processing with a non-empty transcript. Neither mode may point at an existing server holding real meetings.
+20. The local workspace creates a correlation ID per request. A failure now reports only a safe transport/status message and that reference, so a local operator can identify a request without exposing credentials or meeting content.
 
 ## Validation at this checkpoint
 
@@ -55,6 +56,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 - The release-evidence command was exercised on Windows with `--allow-dirty --preview=4173`: all technical checks passed, the loopback shell returned `200` with `Cache-Control: no-store`, and it correctly reported that a dirty worktree cannot be a release candidate.
 - The isolated browser smoke completed on Windows with zero browser errors/warnings. It created a synthetic meeting only in its temporary SQLite store, required two explicit consents, reached ready/recording/stopped, and exposed a local audio-review player.
 - The isolated browser smoke's optional `-ProcessRecording` run completed local Whisper transcript-only processing with one synthetic transcript segment, zero browser errors/warnings, and automatic cleanup of its temporary server/data.
+- After the safe local-request diagnostics change: `npm test` passed **205/205**; `npm run build`, `npm run test:sites` (**4/4**), and the isolated capture smoke also passed.
 - `git diff --check`: passed before committing `341808e`.
 - Earlier validation also passed `python -m py_compile server/diarize_worker.py` and `bash -n scripts/setup-windows-diarization.sh`.
 - A prior synthetic two-voice local run completed Whisper, pyannote, and OpenAI end to end; labels were anonymous and the diarization temp directory was empty afterward.
