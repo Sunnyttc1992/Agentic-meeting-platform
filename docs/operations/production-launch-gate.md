@@ -45,6 +45,6 @@ For a browser-level synthetic capture check that cannot use the configured datab
 npm run smoke:browser
 ```
 
-It starts a temporary SQLite-backed loopback server **without loading `.env`**, drives headless Chrome through creating a meeting, consent, policy check, microphone capture, and stop/review, then stops the server and deletes its temporary SQLite data. Do not add `--process` unless the local Whisper runtime is intentionally being exercised; never point the smoke runner at a server that holds real meetings.
+It starts a temporary SQLite-backed loopback server **without loading `.env`**, drives headless Chrome through creating a meeting, consent, policy check, microphone capture, and stop/review, then stops the server and deletes its temporary SQLite data. To also exercise local Whisper using synthetic audio, run `npm run smoke:browser -- -ProcessRecording`; it asserts a completed local transcript with at least one segment. Never point the smoke runner at a server that holds real meetings.
 
 Do not record or process real meeting content, enable Teams, or expose the API externally until all relevant boxes are complete.

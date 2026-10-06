@@ -40,7 +40,11 @@ ws.addEventListener('message', (event) => {
   if (msg.id && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); return }
   if (msg.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(msg.params.type)) logs.push(`console.${msg.params.type}: ${msg.params.args.map((a) => a.value ?? a.description ?? '').join(' ')}`)
   if (msg.method === 'Runtime.exceptionThrown') logs.push(`exception: ${msg.params.exceptionDetails.exception?.description ?? msg.params.exceptionDetails.text}`)
-  if (msg.method === 'Page.javascriptDialogOpening') { logs.push('dialog accepted: ' + msg.params.message.slice(0, 80)); ws.send(JSON.stringify({ id: ++id, method: 'Page.handleJavaScriptDialog', params: { accept: true } })) }
+  if (msg.method === 'Page.javascriptDialogOpening') {
+    // Processing requires an explicit local confirmation; accepting this test
+    // dialog is part of the synthetic smoke sequence, not a browser error.
+    ws.send(JSON.stringify({ id: ++id, method: 'Page.handleJavaScriptDialog', params: { accept: true } }))
+  }
   if (msg.method === 'Log.entryAdded' && msg.params.entry.level === 'error') {
     const entry = msg.params.entry
     // The studio intentionally preflights before consent to discover the
@@ -115,9 +119,15 @@ if (process.argv.includes('--process')) {
     if (/COMPLETE|FAILED|CAPTURE STOPPED|ERROR/.test(t) && !/QUEUED|UPLOADING|HASHING|PROCESSING ·/.test(t) && !/CAPTURE COMPLETE/.test(t)) break
   }
   await screen('after processing')
+  const completedTranscript = await evaluate(`(() => {
+    const text = document.querySelector('.capture-shell')?.innerText.replace(/\\s+/g, ' ') ?? ''
+    return /LOCAL WHISPER\\s*·\\s*COMPLETE/i.test(text) && /Transcript\\s*·\\s*[1-9]\\d*\\s+segments/i.test(text)
+  })()`)
+  if (!completedTranscript) throw new Error('Expected completed local Whisper processing with at least one transcript segment')
 }
 const hasAudio = await evaluate(`!!document.querySelector('audio.audio-player')?.src`)
 console.log(`\naudio player present with a source: ${hasAudio}`)
+if (!process.argv.includes('--process') && !hasAudio) throw new Error('Expected a local audio-review player after capture stop')
 console.log(`\nBrowser errors/warnings (${logs.length}):\n${logs.join('\n') || '(none)'}`)
 ws.close(); chrome.kill()
 if (logs.length > 0) process.exitCode = 1
