@@ -2,7 +2,8 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { sealAuditEvent } from '../audit.js'
 import { DomainError, invariant } from '../errors.js'
 import { canonicalOutboxEvent, composeRepositoryStorage, tenantScope } from '../storage.js'
-import { decryptAudio, encryptAudio } from './audio-encryption.js'
+import { openRecordingAudio, sealRecordingAudio } from './audio-encryption.js'
+import { openRecordingKeyStore } from './recording-keys.js'
 import { commitmentMatchesQuery, deriveCommitmentRows } from './in-memory.js'
 import { assertLeastPrivilegeRole, assertPostgresSchemaCurrent } from './postgres-schema.js'
 
@@ -22,7 +23,7 @@ import { assertLeastPrivilegeRole, assertPostgresSchemaCurrent } from './postgre
 //
 // `connect()` must return a client with `query(text, params) -> { rows }` and
 // `release()`. See connectPool (node-postgres) and the PGlite helper in tests.
-export function openPostgresStorage({ connect, audioKey, audioKeyProvider = null, close = async () => {} }) {
+export function openPostgresStorage({ connect, audioKey, audioKeyProvider = null, recordingKeyDirectory, close = async () => {} }) {
   invariant(typeof connect === 'function', 'INVALID_STORAGE_ADAPTER', 'A PostgreSQL connection factory is required')
   invariant(Buffer.isBuffer(audioKey) && audioKey.length === 32, 'INVALID_STORAGE_KEY', 'A 256-bit recording audio key is required', 500)
   invariant(audioKeyProvider === null || typeof audioKeyProvider === 'function', 'INVALID_STORAGE_KEY', 'The recording audio key provider must be a function', 500)
@@ -39,6 +40,9 @@ export function openPostgresStorage({ connect, audioKey, audioKeyProvider = null
       throw new DomainError('RECORDING_CONTENT_UNAVAILABLE', 'Recording audio key is unavailable', 503)
     }
   }
+  // Per-recording keys live outside the database, so a dump or dead tuple never
+  // carries a key with its ciphertext. They are wrapped by the pinned master key.
+  const recordingKeys = openRecordingKeyStore({ directory: recordingKeyDirectory, masterKey: currentAudioKey })
 
   async function transaction(tenantId, work) {
     const normalized = tenantScope({ tenantId }).tenantId
@@ -139,7 +143,7 @@ export function openPostgresStorage({ connect, audioKey, audioKeyProvider = null
       return inTenant(tenantId, async (client) => {
         const exists = (await client.query('SELECT 1 FROM recordings WHERE tenant_id = $1 AND id = $2', [tenantId, id])).rows.length > 0
         if (!exists) return false
-        const sealed = encryptAudio(await currentAudioKey(), tenantId, id, bytes)
+        const sealed = await sealRecordingAudio(recordingKeys, tenantId, id, bytes)
         await client.query(`INSERT INTO recording_content (tenant_id, recording_id, key_version, nonce, tag, ciphertext) VALUES ($1, $2, $3, $4, $5, $6)
           ON CONFLICT (tenant_id, recording_id) DO UPDATE SET key_version = excluded.key_version, nonce = excluded.nonce, tag = excluded.tag, ciphertext = excluded.ciphertext`,
         [tenantId, id, sealed.keyVersion, sealed.nonce, sealed.tag, sealed.ciphertext])
@@ -151,13 +155,16 @@ export function openPostgresStorage({ connect, audioKey, audioKeyProvider = null
       return inTenant(tenantId, async (client) => {
         const row = (await client.query('SELECT key_version, nonce, tag, ciphertext FROM recording_content WHERE tenant_id = $1 AND recording_id = $2', [tenantId, id])).rows[0]
         if (!row) return null
-        return decryptAudio(await currentAudioKey(), tenantId, id, { keyVersion: row.key_version, nonce: row.nonce, tag: row.tag, ciphertext: row.ciphertext })
+        return openRecordingAudio({ masterKey: currentAudioKey, recordingKeys }, tenantId, id, { keyVersion: row.key_version, nonce: row.nonce, tag: row.tag, ciphertext: row.ciphertext })
       })
     },
     clearContent: (id, tenantId) => {
       requireTenant(tenantId)
       return inTenant(tenantId, async (client) => {
         await client.query('DELETE FROM recording_content WHERE tenant_id = $1 AND recording_id = $2', [tenantId, id])
+        // The key goes now, not at commit: a rolled-back deletion then leaves
+        // unreadable audio (fail closed), never a deleted recording's key.
+        recordingKeys.destroy(tenantId, id)
         await client.query("UPDATE recordings SET doc = jsonb_set(doc, '{contentClearedAt}', to_jsonb($3::text)) WHERE tenant_id = $1 AND id = $2", [tenantId, id, new Date().toISOString()])
       })
     },
@@ -213,7 +220,7 @@ export function openPostgresStorage({ connect, audioKey, audioKeyProvider = null
 // Opens storage on a node-postgres pool. Refuses to start unless the schema is
 // migrated to exactly this server's version and the connection uses a
 // least-privilege role that row-level security actually applies to.
-export async function connectPostgresStorage({ pool, audioKey, audioKeyProvider = null }) {
+export async function connectPostgresStorage({ pool, audioKey, audioKeyProvider = null, recordingKeyDirectory }) {
   const client = await pool.connect()
   let refusal = null
   try {
@@ -229,5 +236,5 @@ export async function connectPostgresStorage({ pool, audioKey, audioKeyProvider 
     await pool.end()
     throw refusal
   }
-  return openPostgresStorage({ connect: () => pool.connect(), audioKey, audioKeyProvider, close: () => pool.end() })
+  return openPostgresStorage({ connect: () => pool.connect(), audioKey, audioKeyProvider, recordingKeyDirectory, close: () => pool.end() })
 }

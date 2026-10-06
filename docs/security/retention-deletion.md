@@ -48,7 +48,8 @@ Manual deletion and retention expiry both run `#disposeMeetingContent`. Every st
 
 | Store | What it holds | On deletion | Evidence |
 | --- | --- | --- | --- |
-| Recording audio (SQLite or PostgreSQL `recording_content`) | AES-256-GCM ciphertext | Row deleted; recording marked `deleted` with `contentClearedAt` | `server/retention.test.js`, `server/durable-storage.test.js` |
+| Recording audio (SQLite or PostgreSQL `recording_content`) | AES-256-GCM ciphertext under a per-recording key | Row deleted; recording marked `deleted` with `contentClearedAt` | `server/retention.test.js`, `server/durable-storage.test.js` |
+| Per-recording audio keys (`.data/keys/recordings/` locally; `MEETING_RECORDING_KEY_DIR` with PostgreSQL) | One wrapped 256-bit key per recording | Key file overwritten and removed, so every surviving copy of that recording's ciphertext is unreadable (crypto-shredding) | `server/recording-keys.test.js`; "deleting a recording destroys its key" in the SQLite and PostgreSQL suites |
 | Transcript segments and knowledge assertions | Transcript text, summary, decisions, risks, questions, actions | Rows deleted | same |
 | Commitment registry | Derived action rows | Rows deleted | same |
 | SQLite file and write-ahead log (local mode) | Free pages and WAL frames that held deleted rows | `secure_delete` zeroes freed rows; the WAL is checkpointed and truncated after each delete commit | "deleted meeting content is not left readable in the SQLite database or its write-ahead log" |
@@ -56,8 +57,8 @@ Manual deletion and retention expiry both run `#disposeMeetingContent`. Every st
 | Audit log and outbox | Content-free events | Kept (append-only by design) | audit tests |
 | Diarization temporary directory | Plaintext WAV and turn JSON for one job | Removed in `finally` after every job | `server/diarization.test.js` |
 | Browser memory | In-progress capture | Discarded on stop, discard, policy stop, or sensitive-topic stop | studio tests |
-| **Outside the app:** PostgreSQL dead tuples | Deleted rows until `VACUUM` | Daily owner-run `VACUUM (ANALYZE)` after retention sweep; `VACUUM FULL` only in an approved maintenance window. See Windows operations guide. | operator procedure; crypto-shredding remains future work |
-| **Outside the app:** PostgreSQL backups | Point-in-time copies | Expire with the backup rotation; a restore must run deletion reconciliation before serving (see `docs/architecture/windows-postgres-operations.md`) | operator procedure |
+| **Outside the app:** PostgreSQL dead tuples | Deleted rows until `VACUUM` | Daily owner-run `VACUUM (ANALYZE)` after retention sweep; `VACUUM FULL` only in an approved maintenance window. See Windows operations guide. | Audio stored since per-recording keys (key version 2) is crypto-shredded: its key is destroyed at deletion, so dead tuples cannot be decrypted. Version-1 audio from before that change still relies on vacuum. |
+| **Outside the app:** PostgreSQL backups | Point-in-time copies | Expire with the backup rotation; a restore must run deletion reconciliation before serving (see `docs/architecture/windows-postgres-operations.md`). Version-2 audio in a database backup is unreadable once its key is destroyed, as long as the key directory is not restored from an older copy. | operator procedure; PostgreSQL restore test |
 | **Outside the app:** downloaded exports | Markdown files a participant saved | Cannot be recalled; the export is marked confidential and audited | `meeting.export` audit |
 | **Outside the app:** summary provider | Transcript sent for summarization | OpenAI: `store: false` (no stored-response retrieval); provider abuse-monitoring retention per contract. Anthropic: default API retention per contract. Both need the approval packets before real meetings | approval packets |
 

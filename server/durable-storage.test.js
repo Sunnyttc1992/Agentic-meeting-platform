@@ -150,6 +150,34 @@ test('recording audio is encrypted at rest, bound to its recording, and fails cl
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
 
+test('deleting a recording destroys its key, so a restored copy of its SQLite row stays unreadable', async () => {
+  const directory = tempDirectory()
+  try {
+    const { platform, durable } = openPlatform(directory, { schedule: () => {} })
+    await seedMeeting(platform)
+    const recordingId = (await uploadAudio(platform))
+    const keyDirectory = join(directory, 'keys', 'recordings')
+    assert.equal(readdirSync(keyDirectory).length, 1)
+    durable.close()
+    const raw = new DatabaseSync(join(directory, 'meeting-ledger.sqlite'))
+    const backup = raw.prepare('SELECT * FROM recording_content WHERE recording_id = ?').get(recordingId)
+    raw.close()
+    assert.equal(backup.key_version, 2, 'new audio uses a per-recording key')
+
+    const second = openPlatform(directory, { schedule: () => {} })
+    await second.platform.deleteMeetingContent(alex, 'meeting-1')
+    second.durable.close()
+    assert.equal(readdirSync(keyDirectory).length, 0, 'the recording key is gone')
+
+    const restore = new DatabaseSync(join(directory, 'meeting-ledger.sqlite'))
+    restore.prepare('INSERT INTO recording_content (recording_id, key_version, nonce, tag, ciphertext) VALUES (?, ?, ?, ?, ?)').run(recordingId, backup.key_version, backup.nonce, backup.tag, backup.ciphertext)
+    restore.close()
+    const reopened = openLocalDurableStorage({ directory })
+    await assert.rejects(async () => (await reopened.storage.transaction({ tenantId: 'northstar' }, (tx) => tx.recordings.getBytes(recordingId))), { code: 'RECORDING_CONTENT_UNAVAILABLE' })
+    reopened.close()
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
 test('the database itself refuses to edit or delete audit events', async () => {
   const directory = tempDirectory()
   try {

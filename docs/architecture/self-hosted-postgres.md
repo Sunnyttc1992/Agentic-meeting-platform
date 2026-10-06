@@ -9,7 +9,7 @@ This runbook sets up the meeting ledger on a PostgreSQL server you operate. With
 | Data | Location | Protection |
 | --- | --- | --- |
 | Meetings, consent, transcripts, summaries, action plans, commitments, outbox | PostgreSQL tables (`jsonb`) | Row-level security per tenant; TLS in transit |
-| Recording audio | PostgreSQL `recording_content` (`bytea`) | AES-256-GCM, bound to tenant and recording |
+| Recording audio | PostgreSQL `recording_content` (`bytea`) | AES-256-GCM under a per-recording key (wrapped by `MEETING_AUDIO_KEY_FILE`, stored in `MEETING_RECORDING_KEY_DIR`), bound to tenant and recording |
 | Audio encryption key | A 32-byte file you keep **outside** the database | Only the server reads it; never in Git |
 | Audit trail | PostgreSQL `audit_events` | Append-only (triggers and grants), hash-chained per tenant |
 

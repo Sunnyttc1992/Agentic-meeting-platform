@@ -150,9 +150,9 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 | PRIV-02 | done | none | Measured media boundary on remote devices |
 | PRIV-03 | done | none | none at M |
 | PRIV-04 | done | none | Durable scheduler, downstream acknowledgements |
-| PRIV-05 | partial | SQLite secure delete proven on raw files | PostgreSQL dead tuples, backups, provider acknowledgements |
+| PRIV-05 | partial | SQLite secure delete proven on raw files; per-recording audio keys destroyed on deletion make restored SQLite and PostgreSQL audio rows unreadable | Transcript rows in PostgreSQL dead tuples and backups; provider acknowledgements |
 | PRIV-06 | done | none | Hold placement/release workflow and roles |
-| SEC-01 | partial | AES-256-GCM audio at rest | TLS, KMS, per-recording keys |
+| SEC-01 | partial | AES-256-GCM audio at rest under per-recording keys wrapped by the master key | TLS, KMS |
 | SEC-02 | none | none | Entra deferred by decision |
 | SEC-03 | partial | Least-privilege DB role | Role model review |
 | SEC-04 | done | none | none at M |

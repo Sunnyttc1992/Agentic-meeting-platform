@@ -38,7 +38,7 @@ Open **Test secure recording**, grant consent for both participants, record, sto
 | `DIARIZATION_PYTHON` + `DIARIZATION_MODEL_DIR` | unset | Enables the local, offline pyannote Community-1 worker |
 | `MEETING_DIARIZATION_TEMP_DIR` | system temp | Protected directory for the worker's per-job plaintext files (removed after each job) |
 
-Meetings, consent, transcripts, action plans, and the audit trail are saved in `.data/meeting-ledger.sqlite`, so they survive a restart. Recording audio is stored encrypted (AES-256-GCM) with a key generated on first run at `.data/keys/recording-audio-v1.key`.
+Meetings, consent, transcripts, action plans, and the audit trail are saved in `.data/meeting-ledger.sqlite`, so they survive a restart. Recording audio is stored encrypted (AES-256-GCM) under its own per-recording key. Those keys are wrapped by a master key generated on first run at `.data/keys/recording-audio-v1.key` and kept in `.data/keys/recordings/`; deleting a recording destroys its key, so no leftover copy of its audio can be decrypted. With PostgreSQL the per-recording keys go in `MEETING_RECORDING_KEY_DIR` (default `.data/recording-keys`).
 
 - **Back up the key file.** If it is lost, stored audio can no longer be decrypted (transcripts and summaries are unaffected).
 - **Never commit or share `.data/`.**

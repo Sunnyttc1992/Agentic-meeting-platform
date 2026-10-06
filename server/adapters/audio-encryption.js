@@ -9,7 +9,14 @@ import { MEETING_LEDGER_DATA_MODEL_VERSION } from '../storage.js'
 // ciphertext to its tenant and recording, so a blob moved onto another
 // recording, any altered byte, or a wrong key fails authentication instead of
 // yielding audio.
+//
+// Version 1 ciphertext is encrypted directly under the master audio key.
+// Version 2 is encrypted under the recording's own data key (recording-keys.js),
+// so destroying that key erases every copy. New audio is always version 2;
+// version 1 remains readable for recordings stored before per-recording keys.
 export const AUDIO_KEY_VERSION = 1
+export const RECORDING_DATA_KEY_VERSION = 2
+const READABLE_VERSIONS = new Set([AUDIO_KEY_VERSION, RECORDING_DATA_KEY_VERSION])
 
 const restrictToOwner = (path) => { try { chmodSync(path, 0o600) } catch { /* best effort; Windows uses ACLs */ } }
 const audioAad = (tenantId, recordingId) => Buffer.from(`${MEETING_LEDGER_DATA_MODEL_VERSION}:${tenantId}:${recordingId}`)
@@ -41,16 +48,16 @@ export function loadOrCreateAudioKey(keyFile) {
   return assertKey(readFileSync(keyFile))
 }
 
-export function encryptAudio(key, tenantId, recordingId, bytes) {
+export function encryptAudio(key, tenantId, recordingId, bytes, keyVersion = AUDIO_KEY_VERSION) {
   const nonce = randomBytes(12)
   const cipher = createCipheriv('aes-256-gcm', assertKey(key), nonce)
   cipher.setAAD(audioAad(tenantId, recordingId))
   const ciphertext = Buffer.concat([cipher.update(Buffer.from(bytes)), cipher.final()])
-  return { keyVersion: AUDIO_KEY_VERSION, nonce, tag: cipher.getAuthTag(), ciphertext }
+  return { keyVersion, nonce, tag: cipher.getAuthTag(), ciphertext }
 }
 
 export function decryptAudio(key, tenantId, recordingId, { keyVersion, nonce, tag, ciphertext }) {
-  invariant(keyVersion === AUDIO_KEY_VERSION, 'RECORDING_CONTENT_UNAVAILABLE', 'Recording audio was encrypted with an unavailable key', 409)
+  invariant(READABLE_VERSIONS.has(keyVersion), 'RECORDING_CONTENT_UNAVAILABLE', 'Recording audio was encrypted with an unavailable key', 409)
   try {
     const decipher = createDecipheriv('aes-256-gcm', assertKey(key), Buffer.from(nonce))
     decipher.setAAD(audioAad(tenantId, recordingId))
@@ -60,4 +67,17 @@ export function decryptAudio(key, tenantId, recordingId, { keyVersion, nonce, ta
     // Never return partially decrypted or tampered audio.
     invariant(false, 'RECORDING_CONTENT_UNAVAILABLE', 'Recording audio failed its integrity check', 409)
   }
+}
+
+// Seals new audio under a fresh per-recording key.
+export async function sealRecordingAudio(recordingKeys, tenantId, recordingId, bytes) {
+  return encryptAudio((await recordingKeys.create(tenantId, recordingId)), tenantId, recordingId, bytes, RECORDING_DATA_KEY_VERSION)
+}
+
+// Opens either format. A version 2 row whose key was destroyed is unavailable.
+export async function openRecordingAudio({ masterKey, recordingKeys }, tenantId, recordingId, sealed) {
+  const key = sealed.keyVersion === RECORDING_DATA_KEY_VERSION
+    ? (await recordingKeys.read(tenantId, recordingId))
+    : (await masterKey())
+  return decryptAudio(key, tenantId, recordingId, sealed)
 }

@@ -5,7 +5,8 @@ import { sealAuditEvent } from '../audit.js'
 import { invariant } from '../errors.js'
 import { canonicalOutboxEvent, composeRepositoryStorage, createSerializedTransactionRunner, MEETING_LEDGER_DATA_MODEL_VERSION, tenantScope } from '../storage.js'
 import { commitmentMatchesQuery, deriveCommitmentRows } from './in-memory.js'
-import { AUDIO_KEY_VERSION, decryptAudio, encryptAudio, loadOrCreateAudioKey } from './audio-encryption.js'
+import { AUDIO_KEY_VERSION, loadOrCreateAudioKey, openRecordingAudio, sealRecordingAudio } from './audio-encryption.js'
+import { openRecordingKeyStore } from './recording-keys.js'
 
 // Local durable storage: one SQLite file on this machine (node:sqlite, no
 // extra dependency). It implements the same repository signatures as the
@@ -48,6 +49,7 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
   const databasePath = join(directory, databaseFile)
   const db = new DatabaseSync(databasePath)
   let audioKey
+  let recordingKeys
   try {
     restrictToOwner(databasePath)
     // secure_delete overwrites deleted rows with zeros, so deleted transcripts
@@ -58,6 +60,7 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
     if (!version) db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run('data_model_version', MEETING_LEDGER_DATA_MODEL_VERSION)
     invariant(!version || version === MEETING_LEDGER_DATA_MODEL_VERSION, 'UNSUPPORTED_STORAGE_MODEL', 'The local database was written by an unsupported data model version', 500)
     audioKey = loadOrCreateAudioKey(join(directory, 'keys', AUDIO_KEY_FILE))
+    recordingKeys = openRecordingKeyStore({ directory: join(directory, 'keys', 'recordings'), masterKey: () => audioKey })
   } catch (error) {
     // Never leave a refused database open (on Windows that also locks the file).
     db.close()
@@ -116,22 +119,25 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
     },
     get: (id) => parse(sql('SELECT doc FROM recordings WHERE id = ?').get(id)),
     listForMeeting: (tenantId, meetingId) => parseAll(sql('SELECT doc FROM recordings WHERE tenant_id = ? AND meeting_id = ? ORDER BY rowid').all(tenantId, meetingId)),
-    putBytes(id, bytes) {
+    async putBytes(id, bytes) {
       const row = sql('SELECT tenant_id FROM recordings WHERE id = ?').get(id)
       if (!row) return false
-      const sealed = encryptAudio(audioKey, row.tenant_id, id, bytes)
+      const sealed = await sealRecordingAudio(recordingKeys, row.tenant_id, id, bytes)
       sql('INSERT INTO recording_content (recording_id, key_version, nonce, tag, ciphertext) VALUES (?, ?, ?, ?, ?) ON CONFLICT (recording_id) DO UPDATE SET key_version = excluded.key_version, nonce = excluded.nonce, tag = excluded.tag, ciphertext = excluded.ciphertext')
         .run(id, sealed.keyVersion, sealed.nonce, sealed.tag, sealed.ciphertext)
       return true
     },
-    getBytes(id) {
+    async getBytes(id) {
       const row = sql('SELECT r.tenant_id, c.key_version, c.nonce, c.tag, c.ciphertext FROM recording_content c JOIN recordings r ON r.id = c.recording_id WHERE c.recording_id = ?').get(id)
       if (!row) return null
-      return decryptAudio(audioKey, row.tenant_id, id, { keyVersion: row.key_version, nonce: row.nonce, tag: row.tag, ciphertext: row.ciphertext })
+      return openRecordingAudio({ masterKey: () => audioKey, recordingKeys }, row.tenant_id, id, { keyVersion: row.key_version, nonce: row.nonce, tag: row.tag, ciphertext: row.ciphertext })
     },
     clearContent(id) {
       sql('DELETE FROM recording_content WHERE recording_id = ?').run(id)
       const record = recordings.get(id)
+      // Destroying the key erases any copy of the ciphertext that survives
+      // the row delete (WAL frames, file backups) as well.
+      if (record) recordingKeys.destroy(record.tenantId, id)
       if (record) recordings.save({ ...record, contentClearedAt: new Date().toISOString() })
       purgeDeletedContent()
     },

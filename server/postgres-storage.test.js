@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PGlite } from '@electric-sql/pglite'
@@ -22,6 +22,9 @@ import { SPEECH_WAV_MIME_TYPE } from '../src/recordingFormats.js'
 // role, so row-level security is actually enforced in these tests.
 const APP_ROLE = 'meeting_app'
 const AUDIO_KEY = randomBytes(32)
+// Per-recording keys live outside the database, in one folder per test run.
+const KEY_DIR = mkdtempSync(join(tmpdir(), 'meeting-ledger-keys-'))
+test.after(() => rmSync(KEY_DIR, { recursive: true, force: true }))
 const alex = { tenantId: 'northstar', userId: 'alex' }
 const sam = { tenantId: 'northstar', userId: 'sam' }
 const REPLY = {
@@ -76,7 +79,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 30))
 test('the PostgreSQL adapter satisfies the sealed storage contract', async () => {
   const database = await openDatabase()
   try {
-    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY })
+    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR })
     assert.equal(await assertMeetingStorageContract(storage), storage)
     assert.equal(storage.kind, 'postgresql')
   } finally { await database.close() }
@@ -86,7 +89,7 @@ test('a processed meeting is stored in PostgreSQL, survives a restart, and keeps
   const dataDir = mkdtempSync(join(tmpdir(), 'meeting-ledger-pg-'))
   try {
     const first = await openDatabase(dataDir)
-    const platform = platformOn(openPostgresStorage({ connect: first.connect, audioKey: AUDIO_KEY }).storage)
+    const platform = platformOn(openPostgresStorage({ connect: first.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR }).storage)
     const recordingId = await seedAndUpload(platform)
     await platform.startProcessing(alex, 'meeting-1', recordingId)
     await settle()
@@ -96,7 +99,7 @@ test('a processed meeting is stored in PostgreSQL, survives a restart, and keeps
 
     const second = await openDatabase(dataDir)
     try {
-      const reopened = openPostgresStorage({ connect: second.connect, audioKey: AUDIO_KEY })
+      const reopened = openPostgresStorage({ connect: second.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR })
       const restarted = platformOn(reopened.storage)
       const after = await restarted.getRecording(sam, 'meeting-1', recordingId)
       assert.deepEqual(after.segments, before.segments)
@@ -114,7 +117,7 @@ test('a processed meeting is stored in PostgreSQL, survives a restart, and keeps
 test('a second recording keeps the first recording\'s transcript and actions in PostgreSQL', async () => {
   const database = await openDatabase()
   try {
-    const platform = platformOn(openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY }).storage)
+    const platform = platformOn(openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR }).storage)
     const first = await seedAndUpload(platform)
     await platform.startProcessing(alex, 'meeting-1', first)
     await settle()
@@ -135,7 +138,7 @@ test('a second recording keeps the first recording\'s transcript and actions in 
 test('row-level security isolates tenants inside the database itself', async () => {
   const database = await openDatabase()
   try {
-    const platform = platformOn(openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY }).storage, { schedule: () => {} })
+    const platform = platformOn(openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR }).storage, { schedule: () => {} })
     await seedAndUpload(platform)
     const sql = (text, params) => database.app.query(text, params)
 
@@ -154,7 +157,7 @@ test('row-level security isolates tenants inside the database itself', async () 
 test('the audit trail is append-only for the app role and even for the table owner', async () => {
   const database = await openDatabase()
   try {
-    const platform = platformOn(openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY }).storage, { schedule: () => {} })
+    const platform = platformOn(openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR }).storage, { schedule: () => {} })
     await seedAndUpload(platform)
     await database.app.query("SELECT set_config('app.tenant_id', 'northstar', false)")
     await assert.rejects(database.app.query("UPDATE audit_events SET doc = '{}'::jsonb"), /permission denied/)
@@ -170,7 +173,7 @@ test('the audit trail is append-only for the app role and even for the table own
 test('recording audio is encrypted in the database and fails closed when tampered', async () => {
   const database = await openDatabase()
   try {
-    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY })
+    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR })
     const platform = platformOn(storage, { schedule: () => {} })
     const recordingId = await seedAndUpload(platform)
     const read = () => storage.transaction({ tenantId: 'northstar' }, (tx) => tx.recordings.getBytes(recordingId))
@@ -185,9 +188,32 @@ test('recording audio is encrypted in the database and fails closed when tampere
       await admin.query("SELECT set_config('app.tenant_id', '', false)")
     })
     await assert.rejects(read(), { code: 'RECORDING_CONTENT_UNAVAILABLE' })
-    const wrongKey = openPostgresStorage({ connect: database.connect, audioKey: randomBytes(32) })
+    const wrongKey = openPostgresStorage({ connect: database.connect, audioKey: randomBytes(32), recordingKeyDirectory: KEY_DIR })
     await assert.rejects(wrongKey.storage.transaction({ tenantId: 'northstar' }, (tx) => tx.recordings.getBytes(recordingId)), { code: 'RECORDING_CONTENT_UNAVAILABLE' })
   } finally { await database.close() }
+})
+
+test('deleting a recording destroys its key, so dead tuples or a restored backup row stay unreadable', async () => {
+  const database = await openDatabase()
+  const keyDirectory = mkdtempSync(join(tmpdir(), 'meeting-ledger-keys-'))
+  try {
+    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: keyDirectory })
+    const platform = platformOn(storage, { schedule: () => {} })
+    const recordingId = await seedAndUpload(platform)
+    const asTenant = (work) => database.asAdmin(async (admin) => {
+      await admin.query("SELECT set_config('app.tenant_id', 'northstar', false)")
+      try { return await work(admin) } finally { await admin.query("SELECT set_config('app.tenant_id', '', false)") }
+    })
+    const backup = await asTenant(async (admin) => (await admin.query('SELECT * FROM recording_content WHERE recording_id = $1', [recordingId])).rows[0])
+    assert.equal(backup.key_version, 2, 'new audio uses a per-recording key')
+    assert.equal(readdirSync(keyDirectory).length, 1)
+
+    await platform.deleteMeetingContent(alex, 'meeting-1')
+    assert.equal(readdirSync(keyDirectory).length, 0, 'the recording key is gone')
+    await asTenant((admin) => admin.query('INSERT INTO recording_content (tenant_id, recording_id, key_version, nonce, tag, ciphertext) VALUES ($1, $2, $3, $4, $5, $6)',
+      [backup.tenant_id, recordingId, backup.key_version, backup.nonce, backup.tag, backup.ciphertext]))
+    await assert.rejects(storage.transaction({ tenantId: 'northstar' }, (tx) => tx.recordings.getBytes(recordingId)), { code: 'RECORDING_CONTENT_UNAVAILABLE' })
+  } finally { await database.close(); rmSync(keyDirectory, { recursive: true, force: true }) }
 })
 
 test('a recording-key outage fails closed before PostgreSQL audio reads or writes', async () => {
@@ -198,7 +224,7 @@ test('a recording-key outage fails closed before PostgreSQL audio reads or write
     return AUDIO_KEY
   }
   try {
-    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, audioKeyProvider })
+    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR, audioKeyProvider })
     await storage.transaction({ tenantId: 'northstar' }, async (tx) => {
       await tx.meetings.save({ id: 'key-outage', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex'] })
       await tx.recordings.save({ id: 'key-outage-recording', tenantId: 'northstar', meetingId: 'key-outage', organizerId: 'alex' })
@@ -219,7 +245,7 @@ test('a recording-key outage fails closed before PostgreSQL audio reads or write
 test('transactions roll back on failure, nest through savepoints, and cannot switch tenants', async () => {
   const database = await openDatabase()
   try {
-    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY })
+    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR })
     const meeting = (id) => ({ id, tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex'] })
     const failure = new Error('fail after writing')
     await assert.rejects(storage.transaction({ tenantId: 'northstar' }, async (tx) => { await tx.meetings.save(meeting('rolled-back')); throw failure }), (error) => error === failure)
@@ -239,7 +265,7 @@ test('transactions roll back on failure, nest through savepoints, and cannot swi
 test('concurrent audit appends in one tenant get distinct, contiguous sequence numbers', async () => {
   const database = await openDatabase()
   try {
-    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY })
+    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR })
     await Promise.all(Array.from({ length: 12 }, (_, index) => storage.transaction({ tenantId: 'northstar' }, (tx) => tx.audit.append({
       id: `event-${index}`, tenantId: 'northstar', action: 'knowledge.read', outcome: 'allowed', reason: null, meetingId: 'meeting-1',
     }))))
@@ -274,7 +300,7 @@ test('the node-postgres driver path works end to end over the PostgreSQL wire pr
   // The socket server shares one PGlite session, so use one pooled connection.
   const pool = new pg.Pool({ host, port: Number(port), user: 'postgres', database: 'postgres', max: 1 })
   try {
-    const { storage, close } = await connectPostgresStorage({ pool, audioKey: AUDIO_KEY })
+    const { storage, close } = await connectPostgresStorage({ pool, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR })
     const platform = platformOn(storage)
     const recordingId = await seedAndUpload(platform)
     await platform.startProcessing(alex, 'meeting-1', recordingId)
@@ -309,7 +335,7 @@ test('the server refuses to connect as a superuser or as the tables owner, where
     const [host, port] = server.getServerConn().split(':')
     const pool = new pg.Pool({ host, port: Number(port), user: 'postgres', database: 'postgres', max: 1 })
     try {
-      await assert.rejects(connectPostgresStorage({ pool, audioKey: AUDIO_KEY }), { code: 'INSECURE_DATABASE_ROLE' }, role)
+      await assert.rejects(connectPostgresStorage({ pool, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR }), { code: 'INSECURE_DATABASE_ROLE' }, role)
     } finally {
       await server.stop()
       await database.close()

@@ -78,6 +78,8 @@ Keep `DATABASE_ADMIN_URL` out of `.env`; it is an owner credential needed only f
 
 Use a dedicated Windows backup account with a protected `%APPDATA%\postgresql\pgpass.conf` file. Its one-line form is `host:port:database:user:password`; restrict the file ACL to that backup account. Put backup archives on a BitLocker-protected volume or a separately approved encrypted destination. The audio key must be backed up independently with access controls at least as restrictive as the database backup.
 
+The per-recording key directory (`MEETING_RECORDING_KEY_DIR`, default `.dataecording-keys` under the server folder) is deliberately **not** part of the database dump; that separation is what makes deletion a cryptographic erasure. If the organization wants recording audio to survive the loss of this machine, back the directory up separately, encrypted, with a retention no longer than the deletion commitment, and never restore an older copy over the live directory: that would bring back keys for recordings that were deleted since. Transcripts, summaries, and action plans do not depend on these keys.
+
 Run the included logical backup script from a PowerShell session or a Task Scheduler job under the backup account:
 
 ```powershell
@@ -114,7 +116,7 @@ This codebase runs processing in one server process and has no durable queue or 
 
 ## 6. Audio-key rotation boundary
 
-Every stored recording records its key version, but the current server accepts one `MEETING_AUDIO_KEY_FILE` and has no re-encryption migration or multi-key keyring. Therefore:
+Every stored recording records its key version. Version 1 audio is encrypted directly under `MEETING_AUDIO_KEY_FILE`. Version 2 audio (everything stored since per-recording keys) is encrypted under its own random key, which is wrapped by `MEETING_AUDIO_KEY_FILE` and kept in `MEETING_RECORDING_KEY_DIR`. The server still accepts one master key file and has no re-wrapping migration or multi-key keyring. Therefore:
 
 - Never overwrite or replace the active key file in place; doing so makes existing audio fail closed as unavailable.
 - The server verifies the active key file before every PostgreSQL audio read or write. If the file is absent, malformed, or changed, those operations fail closed and roll back; restore the exact escrowed key rather than generating a replacement.
@@ -124,7 +126,7 @@ Every stored recording records its key version, but the current server accepts o
 
 ## 7. Deletion reconciliation and vacuum
 
-PostgreSQL `DELETE` makes application rows inaccessible immediately, but leaves dead tuples until vacuum reclaims them. The recording payload is AES-256-GCM ciphertext, yet the current server uses one active audio key; vacuum is therefore an operational deletion control, not a cryptographic erasure guarantee.
+PostgreSQL `DELETE` makes application rows inaccessible immediately, but leaves dead tuples until vacuum reclaims them. Recording audio stored since per-recording keys is crypto-shredded: deletion destroys that recording's key file, so its dead tuples and any backup copy can no longer be decrypted. Transcripts, summaries, and version-1 audio are not encrypted per recording, so vacuum remains their operational deletion control.
 
 - Run the application retention sweep before database maintenance. It creates the content-free tombstone and removes recording content, transcripts, assertions, and derived commitments through the normal audited path.
 - Run `VACUUM (ANALYZE)` at least daily under the PostgreSQL maintenance/owner account, during the organization-approved low-traffic window. Use `VACUUM (VERBOSE, ANALYZE)` only when the operator needs a protected diagnostic log; its output must not be copied into application logs.
@@ -132,7 +134,9 @@ PostgreSQL `DELETE` makes application rows inaccessible immediately, but leaves 
 - Keep logical backup retention time-bounded and encrypted. A restored backup is never served until the retention/deletion reconciliation in section 4 completes and an operator records its result.
 - Record the sweep completion time, vacuum command result, database size before/after where available, backup-rotation state, and approving operator in the protected operations record. Do not put meeting IDs, transcript text, audio identifiers, database URLs, or credentials in that record.
 
-This procedure reduces normal PostgreSQL dead-tuple exposure. Per-recording data keys with tested crypto-shredding remain the stronger future control for rapid selective erasure.
+This procedure reduces normal PostgreSQL dead-tuple exposure for transcript and knowledge rows. Recording audio no longer depends on it once stored with a per-recording key.
+
+The key file is destroyed when deletion runs, not when the transaction commits. A deletion that rolls back therefore leaves its recording's audio unreadable rather than recoverable; that is the intended fail-closed direction. Overwriting a key file before removing it does not defeat flash wear-levelling, but the residue is a 61-byte wrapped key that also needs the master key.
 
 ## Repeatable setup
 
