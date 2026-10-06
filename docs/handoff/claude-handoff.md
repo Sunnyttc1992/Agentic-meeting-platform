@@ -6,8 +6,8 @@ Read this whole file, then AGENTS.md, before changing the project.
 
 - Repository: D:\Data Science Project\smart-meeting-platform
 - Branch: master
-+ Last committed implementation checkpoint: 771c4ec Add Windows diarization provisioning wizard
-+ The diarization worker, Windows provisioning wizard, worker correction, README link, and this handoff are committed. The worktree should be clean except for the intentionally untracked local-only paths listed below.
+- Last committed implementation checkpoint: 771c4ec Add Windows diarization provisioning wizard
+- The diarization worker, Windows provisioning wizard, worker correction, README link, and this handoff are committed. The worktree should be clean except for the intentionally untracked local-only paths listed below.
 - Do not commit unrelated pre-existing untracked paths: .copilot/, .github/skills/secret-handling/, .npmrc, .prototype-seed/, .squad/, .vscode/, design-qa.md, or implementation-1440x1024.png.
 
 The user explicitly approved the local pyannote Community-1 pilot. Microsoft Entra remains deferred until the company decides on rollout. PostgreSQL remains self-hosted and local on Windows; do not switch to Supabase or another hosted database. The app stays loopback-only.
@@ -32,19 +32,14 @@ The user explicitly approved the local pyannote Community-1 pilot. Microsoft Ent
 - npm run build: passed.
 - npm run test:sites: passed.
 - bash -n scripts/setup-windows-diarization.sh: passed.
-- python -m py_compile server/diarize_worker.py: passed before the exclusive-track-only logic correction; rerun it.
+- python -m py_compile server/diarize_worker.py: passed (rerun 2026-10-06 after the exclusive-track-only correction).
+- 2026-10-06 recheck: npm test 178/178, npm run build, npm run test:sites 4/4, and bash -n on the wizard all passed.
 - A fresh local preview started on 127.0.0.1:4174; GET / returned 200 and authenticated GET /pipeline/readiness returned 200. It reported loopback-only scope, local Whisper available/cached, no Anthropic credential, and Teams disconnected.
 - Native browser automation is currently unavailable because its computer-use kernel cannot write its assets. Use local HTTP checks unless that environment issue changes.
 
 ## Immediate next action
 
-Review and commit the current wizard, README, worker, and handoff changes as a small checkpoint after running:
-
-    python -m py_compile server/diarize_worker.py
-    bash -n scripts/setup-windows-diarization.sh
-    npm test
-    npm run build
-    npm run test:sites
+The checkpoint is committed and revalidated. The pilot is blocked on the user provisioning the model (as of 2026-10-06, .env has no DIARIZATION_* keys).
 
 Do not run the wizard yourself: it opens a browser and requires the user's Hugging Face account and an interactive one-time token. Ask the user to run this from Git Bash in the repository:
 
