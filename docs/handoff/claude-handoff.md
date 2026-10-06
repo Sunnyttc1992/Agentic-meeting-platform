@@ -54,6 +54,12 @@ Validation on a synthetic two-voice Windows TTS WAV (35.4 s; no real meeting aud
 - Timings, licence notice, and worker commit were appended to the operator inventory.
 - The loopback preview was restarted on 127.0.0.1:4174 with diarization active (storage: PostgreSQL via DATABASE_URL). /pipeline/readiness now reports diarization status.
 
+## Summary provider (2026-10-06)
+
+- The user switched summaries to OpenAI (`MEETING_SUMMARY_PROVIDER=openai`, model `gpt-5.5`, Responses API, `store: false`) because the Anthropic account has no credit. Claude remains available. Real meetings still need the provider's approval packet; the OpenAI key is for synthetic tests only.
+- Live synthetic check (35.4 s two-voice TTS WAV, meeting date 2026-10-06): completed in 38.7 s end to end. Summary, 1 decision, 1 risk, 2 questions, 3 actions; 0 withheld. "I will prepare the cost comparison ... before Thursday afternoon" became committed / SPEAKER_01 / 2026-10-08; "I will send the invitation today" became committed / SPEAKER_00 / 2026-10-06; "finalize ... by Friday" became proposed / 2026-10-09. No owner was invented. The diarization temporary directory was empty afterwards.
+- `.env` was overwritten from `.env.example` during key setup. DATABASE_URL, MEETING_AUDIO_KEY_FILE, DATABASE_POOL_MAX, and the three DIARIZATION settings must be restored before the preview server restarts, or it falls back to SQLite without diarization.
+
 ## Next actions
 
 1. Optional: test with one consented, non-sensitive real recording through the UI. CPU diarization of a one-hour meeting is estimated at about 27 minutes in addition to Whisper.
