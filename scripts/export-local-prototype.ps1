@@ -36,6 +36,10 @@ try {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
     Copy-Item -LiteralPath $source -Destination $destination -Force
   }
+  # ZIP timestamps begin in 1980. Normalizing the disposable staging copy
+  # keeps a Windows export reproducible even when Git restored an older time.
+  $archiveTimestamp = Get-Date
+  Get-ChildItem -LiteralPath $packageRoot -File -Recurse | ForEach-Object { $_.LastWriteTime = $archiveTimestamp }
   New-Item -ItemType Directory -Force -Path $resolvedOutput | Out-Null
   if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
   Compress-Archive -LiteralPath $packageRoot -DestinationPath $archive -CompressionLevel Optimal
