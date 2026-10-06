@@ -63,8 +63,9 @@ Speakers:
 
 Action plan:
 - Write each action as a concrete, verb-first task in one or two sentences.
+- A task that was withdrawn, cancelled, or declined later in the meeting is not an action. Never write a negative action such as "Do not book the venue".
 - status is "committed" only when someone agreed to do the task (for example "I'll send it", "Yes, I can do that", or an assignment that was accepted). A suggestion, an idea, or an assignment nobody accepted is "proposed".
-- owner_participant_id: set only when the transcript explicitly names, as the owner, someone who matches one of the listed participant IDs. Otherwise use an empty string. "We", "someone", or "the team" is not an owner.
+- owner_participant_id: set only when the transcript explicitly names, as the owner, someone who matches one of the listed participant IDs. A request addressed to a listed participant by name that is then accepted ("Alex, can you send the contract?" followed by "Yes, I will") names that participant as the owner. Otherwise use an empty string. "We", "someone", or "the team" is not an owner.
 - speaker_label: the label of the speaker who agreed to do the task in their own words (for example SPEAKER_01 saying "I will prepare the comparison"). Otherwise use an empty string, including when the speaker is "unattributed".
 - due_date (YYYY-MM-DD): set only when a calendar date or an unambiguous relative date was stated. Resolve relative dates against the meeting date: "today" is the meeting date, "tomorrow" is the next day, and a weekday ("by Friday") is its next occurrence after the meeting date. Vague timing ("soon", "next quarter", "end of month" without a month) is an empty string.
 

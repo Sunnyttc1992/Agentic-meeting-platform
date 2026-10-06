@@ -88,4 +88,86 @@ export const CASES = [
       actions: [{ text: /memo/i, agreement: 'committed', speakerLabel: null, ownerId: null }],
     },
   },
+  {
+    name: 'a reversed decision keeps only the final one',
+    segments: [
+      segment('S1', 0, 'SPEAKER_00', 'So the plan is to launch the partner portal in January.'),
+      segment('S2', 4, 'SPEAKER_01', 'With the open security findings, January is not realistic.'),
+      segment('S3', 8, 'SPEAKER_00', 'Agreed. We will not launch in January. We will launch the partner portal in March instead.'),
+    ],
+    expect: {
+      decisions: [/march/i],
+      // A decision that still says January without the move to March is stale.
+      forbidDecisions: [/^(?![\s\S]*march)[\s\S]*january/i],
+    },
+  },
+  {
+    name: 'risks and blockers are captured',
+    segments: [
+      segment('S1', 0, 'SPEAKER_00', 'The data migration is blocked until the vendor ships their API fix.'),
+      segment('S2', 4, 'SPEAKER_01', 'There is also a risk that the auditors flag our retention policy next month.'),
+    ],
+    expect: { risks: [/migration|vendor|API/i, /audit|retention/i] },
+  },
+  {
+    name: 'an unanswered question stays an open question',
+    segments: [
+      segment('S1', 0, 'SPEAKER_00', 'Do we need legal sign-off before onboarding the EU customers?'),
+      segment('S2', 4, 'SPEAKER_01', 'Nobody knows yet. We did not settle it today.'),
+    ],
+    expect: { questions: [/legal|EU/i], forbidDecisions: [/legal|EU/i] },
+  },
+  {
+    name: 'an owner who is not a participant is never assigned',
+    segments: [
+      segment('S1', 0, 'SPEAKER_00', 'Jordan from finance will approve the pilot budget by Thursday.'),
+      segment('S2', 4, 'SPEAKER_01', 'Good, I will tell the team once Jordan approves it.'),
+    ],
+    expect: {
+      actions: [{ text: /budget|approv/i, ownerId: null, deadline: '2026-10-08' }],
+      forbidActions: [{ ownerId: 'jordan' }],
+    },
+  },
+  {
+    name: 'a named participant with an absolute date',
+    segments: [
+      segment('S1', 0, 'SPEAKER_00', 'Alex, please send the signed contract to procurement by October 15.'),
+      segment('S2', 4, 'SPEAKER_01', 'Yes, I will send it by the fifteenth.'),
+    ],
+    expect: { actions: [{ text: /contract/i, agreement: 'committed', ownerId: 'alex', deadline: '2026-10-15' }] },
+  },
+  {
+    name: 'a declined request is not a commitment',
+    segments: [
+      segment('S1', 0, 'SPEAKER_00', 'Sam, could you redo the revenue forecast this week?'),
+      segment('S2', 4, 'SPEAKER_01', 'No, sorry, I do not have time this month. Someone else will need to pick it up.'),
+    ],
+    expect: { forbidActions: [{ text: /forecast/i, agreement: 'committed' }, { text: /forecast/i, ownerId: 'sam' }] },
+  },
+  {
+    name: 'a cancelled commitment is not an open action',
+    segments: [
+      segment('S1', 0, 'SPEAKER_01', 'I will book the offsite venue for November.'),
+      segment('S2', 4, 'SPEAKER_00', 'Actually, scratch that. We are cancelling the offsite this year.'),
+      segment('S3', 8, 'SPEAKER_01', 'Okay, then I will not book anything.'),
+    ],
+    expect: { forbidActions: [{ text: /venue|book/i, agreement: 'committed' }] },
+  },
+  {
+    name: 'filler speech records nothing',
+    segments: [
+      segment('S1', 0, 'SPEAKER_00', 'Um.'),
+      segment('S2', 4, 'SPEAKER_01', 'Yeah.'),
+      segment('S3', 8, 'SPEAKER_00', 'Okay, right.'),
+    ],
+    expect: { maxActions: 0, maxDecisions: 0 },
+  },
+  {
+    name: 'amounts are carried over exactly',
+    segments: [
+      segment('S1', 0, 'SPEAKER_00', 'We approved a budget of 48,000 dollars for the analytics pilot.'),
+      segment('S2', 4, 'SPEAKER_01', 'Confirmed, 48,000 for the pilot, no more.'),
+    ],
+    expect: { decisions: [/48,?000/], forbidDecisions: [/(?:40|45|50),?000/] },
+  },
 ]

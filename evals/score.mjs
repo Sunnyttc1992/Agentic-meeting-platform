@@ -2,11 +2,12 @@
 // output of a meeting-intelligence adapter's extract(). Every check is
 // independent so a report shows exactly which rule a provider broke.
 
-const describe = (value) => (value instanceof RegExp ? String(value) : JSON.stringify(value))
+const describe = (value) => (value instanceof RegExp ? String(value) : JSON.stringify(value, (_, item) => (item instanceof RegExp ? String(item) : item)))
 
 function matchesFields(action, expected) {
   return Object.entries(expected).every(([key, value]) => {
-    if (key === 'text' || key === 'optional') return true
+    if (key === 'text') return value instanceof RegExp ? value.test(action.text) : true
+    if (key === 'optional') return true
     return (action[key] ?? null) === value
   })
 }
@@ -26,6 +27,7 @@ export function scoreCase(caseDef, result) {
       continue
     }
     const fields = Object.fromEntries(Object.entries(expected).filter(([key]) => !['text', 'optional'].includes(key)))
+    // The action's text has already matched; only its fields are compared here.
     const hit = candidates.find((action) => matchesFields(action, fields))
     check(
       `action ${describe(expected.text)} has ${describe(fields)}`,
@@ -36,6 +38,11 @@ export function scoreCase(caseDef, result) {
   for (const forbidden of caseDef.expect.forbidActions ?? []) {
     const offenders = result.actions.filter((action) => matchesFields(action, forbidden))
     check(`no action with ${describe(forbidden)}`, offenders.length === 0, offenders.map((action) => action.text).join(' | '))
+  }
+  for (const [kind, label] of [['decisions', 'decision'], ['risks', 'risk'], ['questions', 'open question']]) {
+    for (const pattern of caseDef.expect[kind] ?? []) {
+      check(`${label} matching ${describe(pattern)} is present`, result[kind].some((item) => pattern.test(item.text)), result[kind].map((item) => item.text).join(' | ') || 'none')
+    }
   }
   for (const pattern of caseDef.expect.forbidDecisions ?? []) {
     const offenders = result.decisions.filter((decision) => pattern.test(decision.text))
