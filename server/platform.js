@@ -95,6 +95,10 @@ const SAFE_AUDIT_ACTIONS = new Set([
 const BRIEFING_ITEM_LIMIT = 8
 const BRIEFING_TEXT_LIMIT = 1_000
 const BRIEFING_ASSERTION_KINDS = new Set(['decision', 'risk'])
+const MAX_RETRIEVAL_QUERY_LENGTH = 240
+const MAX_RETRIEVAL_MEETINGS = 8
+const MAX_RETRIEVAL_EXCERPTS_PER_MEETING = 4
+const MAX_RETRIEVAL_EXCERPT_TEXT = 600
 const ACTIVE_COMMITMENT_STATUSES = new Set(['open', 'in-progress', 'blocked'])
 // Outbox payloads are deliberately summaries, not copies of domain rows. A
 // consumer receives enough information to re-check current policy and fetch
@@ -1528,6 +1532,38 @@ export class MeetingIntelligencePlatform {
 
   async retrieveForAi(input, query, correlationId = randomUUID()) {
     return (await this.#matches(principal(input), query, correlationId, 'ai.retrieve'))
+  }
+
+  // The bounded retrieval contract is the safe first stage of RAG. It is
+  // lexical today: embeddings and a vector index require their own local-model
+  // and deletion-lifecycle approval. Each candidate is authorized before its
+  // contents are read, and callers receive only citation-sized evidence.
+  async retrieveMeetingContext(input, { query, limit = MAX_RETRIEVAL_MEETINGS } = {}, correlationId = randomUUID()) {
+    const actor = principal(input)
+    invariant(typeof query === 'string' && query.trim().length > 0 && query.trim().length <= MAX_RETRIEVAL_QUERY_LENGTH,
+      'INVALID_RETRIEVAL_QUERY', 'Retrieval query must be a non-empty bounded string', 400)
+    invariant(Number.isSafeInteger(limit) && limit >= 1 && limit <= MAX_RETRIEVAL_MEETINGS,
+      'INVALID_RETRIEVAL_LIMIT', 'Retrieval limit is invalid', 400)
+    const term = query.trim().toLocaleLowerCase()
+    const sources = []
+    for (const meetingId of (await this.knowledge.meetingIdsMatching(actor.tenantId, term))) {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
+      const decision = this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() })
+      await this.#audit({ correlationId, principal: actor, action: 'ai.retrieve', meetingId, outcome: decision.allowed ? 'allowed' : 'denied', reason: decision.allowed ? null : decision.code })
+      if (!decision.allowed) continue
+      const knowledge = (await this.knowledge.forMeeting(actor.tenantId, meetingId))
+      const excerpts = [
+        ...(knowledge.segments ?? []).filter((item) => String(item?.text ?? '').toLocaleLowerCase().includes(term)).map((item) => ({
+          type: 'transcript', id: item.id, text: item.text.slice(0, MAX_RETRIEVAL_EXCERPT_TEXT), citations: [item.id],
+        })),
+        ...(knowledge.assertions ?? []).filter((item) => String(item?.text ?? '').toLocaleLowerCase().includes(term) && isBoundedKnowledgeCitationList(item?.citations)).map((item) => ({
+          type: 'assertion', id: item.id, text: item.text.slice(0, MAX_RETRIEVAL_EXCERPT_TEXT), citations: [...item.citations],
+        })),
+      ].slice(0, MAX_RETRIEVAL_EXCERPTS_PER_MEETING)
+      if (excerpts.length > 0) sources.push(Object.freeze({ meetingId, excerpts: Object.freeze(excerpts.map((item) => Object.freeze({ ...item, citations: Object.freeze(item.citations) }))) }))
+      if (sources.length === limit) break
+    }
+    return Object.freeze({ query: query.trim(), sources: Object.freeze(sources) })
   }
 
   async queryCommitments(input, query = '', correlationId = randomUUID()) {

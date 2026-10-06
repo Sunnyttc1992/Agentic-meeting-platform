@@ -86,6 +86,15 @@ function validatePreflight(body) {
   return body
 }
 
+function validateAiRetrieve(body) {
+  strictObject(body, ['query', 'limit'], ['query'])
+  if (typeof body.query !== 'string') throw new DomainError('INVALID_REQUEST', 'query must be a string', 400)
+  if (body.limit !== undefined && (!Number.isSafeInteger(body.limit) || body.limit < 1 || body.limit > 8)) {
+    throw new DomainError('INVALID_REQUEST', 'limit must be an integer from 1 to 8', 400)
+  }
+  return body
+}
+
 export function createHttpHandler(platform, { pipelineReadiness = createPipelineReadiness(), rateLimiter = createRateLimiter() } = {}) {
   return async (request, response) => {
     let correlationId = randomUUID()
@@ -165,8 +174,8 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
       if (request.method === 'DELETE' && deleteMatch) return json(response,200,await platform.deleteMeetingContent(principalFrom(request),deleteMatch[1],correlationId))
       if (request.method === 'POST' && teamsImportMatch) return json(response, 202, await platform.prepareTeamsImport(principalFrom(request), teamsImportMatch[1], await readJson(request), correlationId))
       if (request.method === 'POST' && url.pathname === '/ai/retrieve') {
-        const body = await readJson(request)
-        return json(response, 200, { context: await platform.retrieveForAi(principalFrom(request), body.query, correlationId) })
+        const body = validateAiRetrieve(await readJson(request))
+        return json(response, 200, { context: await platform.retrieveMeetingContext(principalFrom(request), body, correlationId) })
       }
       return json(response, 404, errorBody('NOT_FOUND', 'Route not found', correlationId))
     } catch (error) {

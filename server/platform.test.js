@@ -478,6 +478,24 @@ test('unauthorized matching meetings never enter AI context', async () => {
   assert.ok(audit.all().some((event) => event.correlationId === 'corr-ai' && event.action === 'ai.retrieve' && event.outcome === 'denied'))
 })
 
+test('bounded retrieval returns only authorized citation-sized prior-meeting evidence', async () => {
+  const { platform, audit } = setup()
+  await createAndConsent(platform, 'standard', 'meeting-private')
+  await seedKnowledge(platform, 'meeting-private')
+  const result = await platform.retrieveMeetingContext(participant, { query: 'privacy', limit: 1 }, 'rag-context')
+  assert.deepEqual(result, {
+    query: 'privacy',
+    sources: [{ meetingId: 'meeting-private', excerpts: [{
+      type: 'transcript', id: 'meeting-private-segment', text: 'Launch depends on privacy review', citations: ['meeting-private-segment'],
+    }, {
+      type: 'assertion', id: 'meeting-private-decision', text: 'Privacy review gates launch', citations: ['meeting-private-segment'],
+    }] }],
+  })
+  assert.ok(audit.all().some((event) => event.correlationId === 'rag-context' && event.action === 'ai.retrieve' && event.outcome === 'allowed'))
+  await assert.rejects(async () => (await platform.retrieveMeetingContext(participant, { query: '' })), { code: 'INVALID_RETRIEVAL_QUERY' })
+  await assert.rejects(async () => (await platform.retrieveMeetingContext(participant, { query: 'privacy', limit: 9 })), { code: 'INVALID_RETRIEVAL_LIMIT' })
+})
+
 test('tenant scope prevents cross-tenant lookup from revealing existence', async () => {
   const { platform, audit } = setup()
   await createAndConsent(platform)

@@ -30,7 +30,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 7. Headless Chrome studio smoke coverage for consent, fake microphone, record, stop, and process.
 8. Latest fix: Whisper's exact stock silence phrases (`Thank you.` and `Thanks for watching.`) are suppressed only when their matching audio span is silent or a steady sine tone. Speech-like amplitude or zero-crossing variation preserves the phrase. This deliberately is not a broad voice-activity or content filter.
 9. Request-path audit fail-closed boundary: every `#audited` state transition on a storage-backed platform writes its allowed audit event in the same tenant transaction. If that append fails, the transition rolls back. Capture-stop now uses this boundary too. Processor jobs enqueue only after that transaction commits, so an audit outage cannot run a job for rolled-back recording state.
-10. Retrieval baseline: `POST /ai/retrieve` already does tenant-scoped lexical matching and rechecks meeting access for every candidate before returning prior-meeting evidence. It is **not** vector RAG and is not connected to an LLM prompt. Do not pass its current broad result directly to a model.
+10. Bounded prior-meeting retrieval: `POST /ai/retrieve` now requires a non-empty bounded query and optional limit (1-8). It applies tenant scope and meeting authorization before reading each candidate, returns only matched transcript/assertion excerpts (each with citations), and records content-free `ai.retrieve` source-selection audit events. It is lexical—not vector RAG—and is not connected to an LLM prompt.
 
 ## Validation at this checkpoint
 

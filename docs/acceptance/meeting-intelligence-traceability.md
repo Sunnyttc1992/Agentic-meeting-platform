@@ -142,7 +142,7 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 | AUTH-04 | done | PostgreSQL RLS tenant isolation | Object store, when added |
 | AUTH-05 | done | Sealed tenant facades; RLS | Static checks |
 | AUTH-06 | partial | none | Redaction and topic-level restriction |
-| AUTH-07 | partial | none | No search/vector store exists yet |
+| AUTH-07 | partial | Tenant-isolated, authorization-filtered bounded lexical retrieval | No vector index; deletion/backup lifecycle for future embeddings |
 | AUTH-08 | done | none | none at M |
 | AUTH-09 | partial | Least-privilege DB role | Workload identities |
 | AUTH-10 | partial | Rate limits, strict schemas | Token authentication (Entra deferred) |
