@@ -46,4 +46,6 @@ DRAFT -> CLASSIFICATION_REQUIRED -> CONSENT_REQUIRED -> RECORDING_AUTHORIZED
 6. Apply configured disposition: delete captured material or retain restricted evidence where policy/legal hold requires. Legal hold blocks destruction but never expands visibility.
 7. Resume only through a new preflight and new consent/authorization lease; never silently resume.
 
+Prototype implementation (2026-10-06): `POST /meetings/{id}/recording/stop` with `{"reason": "sensitive-topic" | "participant-request"}`, callable by any participant (outsiders get an opaque 404). It revokes the active lease, appends a content-free `captureStops` boundary (`at`, reason code, whether a lease was revoked) to the meeting, quarantines any not-yet-published recording made under that lease, and deletes its audio unless the meeting is under legal hold. It emits a `recording.stop` audit event with the reason code. Consent withdrawal records the same boundary with `CONSENT_WITHDRAWN`. The studio's "Stop and discard: sensitive topic" control discards in-browser audio before calling the server. Limitation: a stop raised from another device reaches an open studio only at its next lease renewal; the server already refuses that capture's upload.
+
 False negatives are the highest-risk failure. Calendar/agenda screening supplements, but does not replace, participant controls and organization policy.

@@ -360,6 +360,20 @@ export function RecordingStudio({ onBack }) {
     stopRecorder(false)
   }
 
+  // The microphone stops and in-memory audio is discarded before any network
+  // call, so a slow or failed request can never keep capture alive. The server
+  // then records the boundary and revokes the authorization.
+  async function sensitiveStop() {
+    stopRecorder(true)
+    const reason = "Stopped for a sensitive topic. The audio captured so far was discarded and cannot be uploaded."
+    dispatch({ type: "POLICY_STOP", reason })
+    try {
+      await api(`/meetings/${MEETING_ID}/recording/stop`, { body: { reason: "sensitive-topic" } })
+    } catch (error) {
+      if (mountedRef.current) dispatch({ type: "POLICY_STOP", reason: `${reason} The server could not record the stop (${error.message}); the authorization still expires on its own.` })
+    }
+  }
+
   function discard() {
     captureRef.current.discard()
     streamRef.current = null
@@ -438,6 +452,7 @@ export function RecordingStudio({ onBack }) {
       <aside className="capture-rail">
         <p className="eyebrow">TRUST CONTROLS</p>
         <dl><div><dt>Meeting policy</dt><dd><ShieldCheck /> Preflight enforced</dd></div><div><dt>{mockMode ? "Capture source" : "Microphone"}</dt><dd><Microphone aria-hidden="true" /> {mockMode ? "Synthetic fixture · no microphone/audio" : streamRef.current ? "Connected" : "Not active"}</dd></div><div><dt>Authorization lease</dt><dd>{state.authorizationExpiresAt ? `${displayTime(remaining)} remaining` : "Not issued"}</dd></div><div><dt>Storage</dt><dd>{mockMode ? "No audio retained" : "In-memory only"}</dd></div></dl>
+        {state.phase === "recording" && <div className="withdraw-box sensitive-box"><b>Topic turned sensitive?</b><p>Stop now. The audio captured so far is discarded, the stop time is recorded, and capture can resume only after a new policy check.</p><button onClick={sensitiveStop}>Stop and discard: sensitive topic</button></div>}
         {state.phase === "recording" && <div className="withdraw-box"><b>Consent changed?</b><p>Any participant can withdraw. Capture stops immediately and audio is cleared.</p>{participants.map((person) => <button key={person.id} onClick={() => setConsent(person.id, "withdrawn")}>Withdraw for {person.name}</button>)}</div>}
         <small>{state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "Audio is transcribed on this machine by Whisper and never leaves it. When configured, only the transcript text and anonymous speaker labels are sent to the configured AI provider (OpenAI or Claude) to write the cited summary and action plan." : "Local deterministic processor is a clearly labeled fake. It demonstrates provenance, identity confidence, and citations; it does not claim real STT or diarization."}</small>
       </aside>

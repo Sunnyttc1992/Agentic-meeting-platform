@@ -54,7 +54,12 @@ const POLICY_REASON_CODES = new Set([
   'CLASSIFICATION_REQUIRED', 'SENSITIVE_RECORDING_DENIED', 'CONSENT_REQUIRED',
   'CONSENT_NOT_GRANTED', 'CONSENT_POLICY_MISMATCH', 'CONSENT_MALFORMED',
   'CONSENT_EXPIRED', 'RECORDING_POLICY_CHANGED', PROCESSING_CANCELLED, 'RETENTION_EXPIRED',
+  'SENSITIVE_TOPIC_STOP', 'PARTICIPANT_STOP_REQUEST', 'CONSENT_WITHDRAWN',
 ])
+// A participant may stop capture at any time. The request names only one of
+// these reasons; the stored boundary carries the matching code, never prose.
+const CAPTURE_STOP_REASONS = new Map([['sensitive-topic', 'SENSITIVE_TOPIC_STOP'], ['participant-request', 'PARTICIPANT_STOP_REQUEST']])
+const MAX_CAPTURE_STOPS = 50
 // The retention scheduler acts under this tenant-scoped service identity. It is
 // never accepted from a request, and it can only expire content that current
 // policy says is past its retention date.
@@ -80,7 +85,7 @@ const SAFE_AUDIT_ACTIONS = new Set([
   'ai.retrieve', 'privacy-access.read', 'meeting.export', 'retention.expire',
   'commitment.query',
   'management-briefing.read',
-  'teams.readiness', 'teams.import.prepare',
+  'teams.readiness', 'teams.import.prepare', 'recording.stop',
 ])
 
 // A briefing is deliberately a small derived view. It may carry source links
@@ -931,7 +936,11 @@ export class MeetingIntelligencePlatform {
       meetingRecord.consentEvidence.push(consentEvidence(body))
       await this.meetings.save(meetingRecord)
       await this.#revokeLeaseIfStale(meetingRecord)
-      if (body.decision !== 'granted') await this.#quarantine(meetingRecord, 'CONSENT_NOT_GRANTED')
+      if (body.decision !== 'granted') {
+        // Withdrawal ends any active capture authorization at a recorded boundary.
+        await this.#endCapture(meetingRecord, 'CONSENT_WITHDRAWN')
+        await this.#quarantine(meetingRecord, 'CONSENT_NOT_GRANTED')
+      }
     }))
   }
 
@@ -963,6 +972,73 @@ export class MeetingIntelligencePlatform {
       this.#capturePolicy(actor, meetingRecord)
       return this.teamsIntegration.prepareImport(body)
     }))
+  }
+
+  // Records a capture boundary and revokes the active authorization, so audio
+  // captured under it can never be uploaded. Returns whether a lease was live.
+  async #endCapture(meetingRecord, reason) {
+    const lease = meetingRecord.recording
+    const live = Boolean(lease?.leaseId) && lease.status === 'authorized'
+    if (live) await this.#revokeLease(meetingRecord, reason)
+    meetingRecord.captureStops = [
+      ...(Array.isArray(meetingRecord.captureStops) ? meetingRecord.captureStops : []),
+      Object.freeze({ at: this.clock.now().toISOString(), reason: this.#safePolicyReason(reason), authorizationRevoked: live }),
+    ].slice(-MAX_CAPTURE_STOPS)
+    await this.meetings.save(meetingRecord)
+    return live
+  }
+
+  // Quarantines a recording that has not finished processing and deletes its
+  // audio, unless the meeting is under legal hold: a hold blocks destruction
+  // (the quarantine still removes it from every ordinary read and job). Other
+  // recordings' published knowledge is untouched: the stop applies only to the
+  // capture it names.
+  async #quarantineStoppedRecording(meetingRecord, record, reason) {
+    if (['completed', 'deleted', 'quarantined'].includes(record.state)) return false
+    record.state = 'quarantined'
+    record.progress = 100
+    record.error = POLICY_REVOKED
+    record.processor = null
+    record.dispositionReason = this.#safePolicyReason(reason)
+    await this.recordings.save(record)
+    if (meetingRecord.retentionState !== 'held') await this.recordings.clearContent(record.tenantId, record.id)
+    await this.#emitOutbox({
+      tenantId: record.tenantId,
+      type: 'recording.quarantined', aggregateType: 'recording', aggregateId: record.id,
+      revision: 'quarantined',
+      payload: Object.freeze({ state: 'quarantined', reason: record.dispositionReason }),
+    })
+    return true
+  }
+
+  // Any participant can stop capture immediately, for example when the
+  // discussion turns to a sensitive topic. The active authorization is revoked
+  // (later upload or processing of that capture is refused), the boundary time
+  // is recorded, and anything already uploaded under it and not yet published
+  // is quarantined with its audio deleted. A new capture needs a fresh preflight.
+  async stopCapture(input, meetingId, body, correlationId = randomUUID()) {
+    const actor = principal(input)
+    const reason = CAPTURE_STOP_REASONS.get(body?.reason)
+    let result
+    try {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
+      invariant(meetingRecord.participantIds.includes(actor.userId) || meetingRecord.organizerId === actor.userId, 'MEETING_NOT_FOUND', 'Meeting not found', 404)
+      invariant(reason, 'INVALID_STOP_REASON', 'Stop reason must be sensitive-topic or participant-request', 400)
+      const leaseId = meetingRecord.recording?.leaseId ?? null
+      const authorizationRevoked = await this.#endCapture(meetingRecord, reason)
+      let quarantinedRecordings = 0
+      if (leaseId) {
+        for (const record of (await this.recordings.listForMeeting(actor.tenantId, meetingId)) ?? []) {
+          if (record.leaseId === leaseId && (await this.#quarantineStoppedRecording(meetingRecord, record, reason))) quarantinedRecordings += 1
+        }
+      }
+      result = { stoppedAt: meetingRecord.captureStops.at(-1).at, reason: body.reason, authorizationRevoked, quarantinedRecordings }
+    } catch (error) {
+      await this.#audit({ correlationId, principal: actor, action: 'recording.stop', meetingId, outcome: 'denied', reason: error?.code ?? 'UNEXPECTED_ERROR' })
+      throw error
+    }
+    await this.#audit({ correlationId, principal: actor, action: 'recording.stop', meetingId, outcome: 'allowed', reason })
+    return result
   }
 
   async authorizeRecording(input, meetingId, correlationId = randomUUID()) {

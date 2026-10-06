@@ -111,6 +111,7 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
       const privacyAccessMatch = url.pathname.match(/^\/meetings\/([^/]+)\/privacy-access$/)
       const consentMatch = url.pathname.match(/^\/meetings\/([^/]+)\/consent$/)
       const preflightMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recording\/preflight$/)
+      const stopMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recording\/stop$/)
       const recordingsMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings$/)
       const bytesMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings\/([^/]+)\/bytes$/)
       const processMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings\/([^/]+)\/process$/)
@@ -140,6 +141,11 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
         validatePreflight(await readJson(request))
         const authorization = await platform.authorizeRecording(principalFrom(request), preflightMatch[1], correlationId)
         return json(response, 200, { status: authorization.status, leaseId: authorization.leaseId, authorizationExpiresAt: authorization.authorizationExpiresAt, allowedMimeTypes: authorization.allowedMimeTypes, maxBytes: authorization.maxBytes })
+      }
+      if (request.method === 'POST' && stopMatch) {
+        const body = await readJson(request)
+        strictObject(body, ['reason'], ['reason'])
+        return json(response, 200, await platform.stopCapture(principalFrom(request), stopMatch[1], body, correlationId))
       }
       if (request.method === 'POST' && recordingsMatch) { const body=await readJson(request); strictObject(body,['leaseId','contentType','byteLength','sha256'],['leaseId','contentType','byteLength','sha256']); return json(response,201,await platform.createRecording(principalFrom(request),recordingsMatch[1],body,correlationId)) }
       if (request.method === 'PUT' && bytesMatch) { const contentType=String(header(request,'content-type')??'').toLowerCase(); const rawLength=header(request,'content-length'); const contentLength=rawLength===undefined?NaN:Number(rawLength); const bytes=await readBytes(request,platform.maxRecordingBytes); return json(response,200,await platform.uploadRecording(principalFrom(request),bytesMatch[1],bytesMatch[2],{contentType,contentLength,bytes},correlationId)) }
