@@ -35,6 +35,9 @@ export function exportFilename(meetingId) {
 }
 
 export function renderMeetingRecordMarkdown({ meeting, segments = [], assertions = [], processor = null, exportedBy, exportedAt, correlationId }) {
+  // The model ID is already validated at the processor boundary; it is shown so
+  // readers know which model wrote the generated sections.
+  const summaryModel = assertions.find((item) => typeof item.provenance?.model === 'string')?.provenance.model ?? null
   const times = new Map(segments.map((segment) => [segment.id, timestamp(segment.startMs)]))
   const sources = (citations = []) => {
     const cited = citations.map((id) => times.get(id)).filter(Boolean)
@@ -49,6 +52,7 @@ export function renderMeetingRecordMarkdown({ meeting, segments = [], assertions
     `- Classification: ${escapeMarkdownText(meeting.classification)}`,
     `- Participants: ${meeting.participantIds.map(escapeMarkdownText).join(', ')}`,
     `- Processed by: ${escapeMarkdownText(processor ?? 'Not recorded')}`,
+    ...(summaryModel ? [`- Summary model: ${escapeMarkdownText(summaryModel)}`] : []),
     '- Speakers are not identified; speaker labels are anonymous and unverified. Owners and due dates appear only where they were stated in the meeting.',
     '',
   ]

@@ -25,6 +25,7 @@ const TRUSTED_PROCESSOR_MODES = new Map([
   ['Local Whisper + OpenAI', 'local-whisper-openai'],
   ['Local Whisper + pyannote + OpenAI', 'local-whisper-pyannote-openai'],
 ])
+const MODEL_BACKED_PROCESSOR_MODES = new Set(['local-whisper-claude', 'local-whisper-pyannote-claude', 'local-whisper-openai', 'local-whisper-pyannote-openai'])
 // Whisper cannot separate speakers; this label is kept verbatim so the
 // transcript never implies one diarized speaker.
 const UNATTRIBUTED_SPEAKER_LABEL = 'UNATTRIBUTED'
@@ -737,11 +738,19 @@ export class MeetingIntelligencePlatform {
     return Object.freeze(provenance)
   }
 
-  #canonicalProcessorAssertionProvenance(descriptor, recording) {
+  #canonicalProcessorAssertionProvenance(descriptor, recording, model = null) {
     return Object.freeze({
       ...this.#canonicalProcessorProvenance(descriptor, recording),
+      ...(model ? { model } : {}),
       canonicalOrigin: CANONICAL_PROCESSOR_ASSERTION_ORIGIN,
     })
+  }
+
+  // The model that wrote generated items is kept only for a trusted
+  // model-backed processor mode and only as a plain model identifier.
+  #canonicalModel(descriptor, rawModel) {
+    if (!MODEL_BACKED_PROCESSOR_MODES.has(descriptor.mode)) return null
+    return typeof rawModel === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(rawModel) ? rawModel : null
   }
 
   #canonicalConfidence(value) {
@@ -774,6 +783,7 @@ export class MeetingIntelligencePlatform {
     invariant(result.segments.length <= MAX_PROCESSOR_SEGMENTS && result.assertions.length <= MAX_PROCESSOR_ASSERTIONS, 'INVALID_PROCESSOR_RESULT', 'Processor result exceeds its size limits')
     const bindings = this.#rosterBindings(rosterEvidence)
     const descriptor = this.#processorDescriptor(result.processor)
+    const model = this.#canonicalModel(descriptor, result.model)
     const rawSegmentIds = new Map()
     const diarizationLabels = new Map()
     const canonicalDiarizationLabel = (rawLabel) => {
@@ -822,7 +832,7 @@ export class MeetingIntelligencePlatform {
         kind,
         text: item.text.trim(),
         citations: [...new Set(item.citations.map((id) => rawSegmentIds.get(id)))],
-        provenance: this.#canonicalProcessorAssertionProvenance(descriptor, recording),
+        provenance: this.#canonicalProcessorAssertionProvenance(descriptor, recording, model),
         ...(kind === 'action' ? { commitment: this.#canonicalProcessorCommitment(item.commitment, participantIds, (raw) => diarizationLabels.get(raw) ?? null) } : {}),
       }))
     }

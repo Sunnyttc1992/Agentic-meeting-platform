@@ -243,10 +243,22 @@ test('OpenAI receives the same minimal transcript request, unstored, and its hos
   assert.equal(status.recording.state, 'completed')
   assert.equal(status.recording.processor, 'Local Whisper + OpenAI')
   assert.ok(status.segments.every((segment) => segment.provenance.mode === 'local-whisper-openai'))
+  assert.ok(status.assertions.every((assertion) => assertion.provenance.model === DEFAULT_OPENAI_SUMMARY_MODEL), 'every generated item records the model that wrote it')
+  assert.ok(status.segments.every((segment) => !('model' in segment.provenance)), 'transcript segments are not model-written')
+  assert.match((await state.platform.exportMeetingRecord(sam, 'meeting-1')).body, /- Summary model: gpt-5\.5\n/)
   assert.equal(status.recording.withheldAssertions, 1, 'the decision citing a nonexistent segment is withheld')
   const [send, everything] = status.assertions.filter((assertion) => assertion.kind === 'action')
   assert.deepEqual(send.commitment, { ownerId: 'sam', deadline: '2026-10-20T00:00:00.000Z', status: 'open', agreement: 'committed' })
   assert.deepEqual(everything.commitment, { ownerId: null, deadline: null, status: 'open', agreement: 'proposed' })
+})
+
+test('a malformed model identifier is dropped from provenance instead of being stored', async () => {
+  const openai = fakeOpenAI(HOSTILE_RESPONSE)
+  const state = (await pipelineSetup(new OpenAIMeetingIntelligence({ client: openai.client, model: 'gpt-5.5 <script>alert(1)</script>' })))
+  const status = await runRecording(state)
+  assert.equal(status.recording.state, 'completed')
+  assert.ok(status.assertions.length > 0)
+  assert.ok(status.assertions.every((assertion) => !('model' in assertion.provenance)))
 })
 
 test('an OpenAI refusal, truncated reply, or unfinished response fails closed and stores nothing', async () => {

@@ -136,8 +136,9 @@ export function MeetingIntelligenceResult({ result, onDownload = null }) {
   const summary = ofKind("summary")[0]
   const actions = ofKind("action")
   const withheld = result?.recording?.withheldAssertions ?? 0
+  const summaryModel = assertions.find((item) => typeof item.provenance?.model === "string")?.provenance.model ?? null
   return <div className="processing-complete" data-processor-mode={mode ?? "unknown"}>
-    <p className="stage-index">{label} · COMPLETE</p>
+    <p className="stage-index">{label}{summaryModel ? ` · ${summaryModel.toUpperCase()}` : ""} · COMPLETE</p>
     <h2>{TRANSCRIPT_ONLY_MODES.has(mode) ? "Meeting transcript" : "Cited meeting intelligence"}</h2>
     {onDownload && segments.length > 0 && <button className="copper-button result-download" onClick={onDownload}>Download meeting record</button>}
     {TRANSCRIPT_ONLY_MODES.has(mode) && <p className="intelligence-note">Summary and action plan are not configured on this server. Set <code>OPENAI_API_KEY</code> or <code>ANTHROPIC_API_KEY</code> and restart it to generate them.</p>}

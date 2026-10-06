@@ -58,7 +58,7 @@ export class LocalMeetingProcessor {
     for (const item of result.risks) add('risk', item)
     for (const item of result.questions) add('question', item)
     for (const item of result.actions) add('action', item, { commitment: { ownerId: item.ownerId, deadline: item.deadline, agreement: item.agreement, speakerLabel: item.speakerLabel } })
-    return { segments, assertions, processor: this.name }
+    return { segments, assertions, processor: this.name, model: this.intelligence.model ?? null }
   }
 }
 
