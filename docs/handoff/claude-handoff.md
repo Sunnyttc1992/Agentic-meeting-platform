@@ -38,10 +38,11 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 14. Per-computer prototype distribution: `npm run prototype:export` creates a reviewed-source ZIP and SHA-256 sidecar without secrets, data, caches, build output, dependencies, or Git history. Each recipient runs `scripts/install-local-prototype.ps1`, which installs pinned dependencies, invokes the existing PostgreSQL setup wizard only when needed, and builds the bundle. `scripts/start-local-prototype.ps1` starts the resulting instance only at `localhost`/`127.0.0.1`. See `docs/operations/local-prototype-distribution.md`.
     - The exporter packages only tracked files, refuses a dirty tracked release, and normalizes timestamps in its disposable staging directory for Windows `Compress-Archive` compatibility.
 15. The browser no longer starts in a seeded scenario. `LocalMeetingWorkspace` creates and lists durable local meetings through same-origin `POST`/`GET /meetings`, then opens the selected real record in the recording studio. The server derives tenant and organizer from the local development identity, validates the bounded create payload, filters the list to active participant records, and keeps meeting-list audit events content-free. The legacy no-title `meeting-1` record is hidden rather than deleted.
+16. Background processing policy revocation now fails closed on an audit outage. A recording quarantine, its derived-content clearing, and its content-free `recording.process.complete` denial audit run in one tenant transaction. If audit append fails, the queued recording and outbox remain unchanged; a later policy recheck still prevents processing.
 
 ## Validation at this checkpoint
 
-- `npm test`: **201/201 passing**.
+- `npm test`: **202/202 passing**.
 - `npm run build`: passed.
 - `npm run test:sites`: **4/4 passing**.
 - Parsed all three new PowerShell scripts and ran `bash -n scripts/setup-windows-postgres.sh`.
@@ -71,7 +72,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 
 These do not require a product decision, but preserve the stated constraints and add tests for every behavioral change:
 
-1. Extend SEC-08 fail-closed behavior to background policy-revocation/quarantine paths and run broader audit-sink/KMS outage exercises. Request and processor terminal transitions are atomic now, but the traceability matrix deliberately remains partial until those remaining paths are covered.
+1. Run KMS/key-file outage exercises for SEC-08. Request, processor-terminal, and background policy-revocation audit paths are atomic now, but the traceability matrix remains partial until encryption-key failure behavior is covered.
 2. Test the prototype ZIP on a clean Windows computer with locally installed Node, Git for Windows/WSL, and PostgreSQL. Verify that it never contains secrets or data, every recipient gets fresh local credentials/key material, and the post-install server rejects a non-loopback Host header.
 3. Keep prior-meeting retrieval lexical and citation-sized until an approved local embedding model and a tenant-isolated vector-index lifecycle (creation, deletion, rebuild, backup handling) are implemented. Never send retrieval output to either external summary provider without its approval packet covering that new data flow.
 

@@ -856,55 +856,47 @@ export class MeetingIntelligencePlatform {
     }
   }
 
-  async #quarantineRecording(meetingRecord, recordingId, reason) {
-    if (this.#tenantTransaction) {
-      return (await this.#tenantTransaction(meetingRecord.tenantId, async (transaction) => {
-        const record = (await transaction.recordings.get(recordingId))
-        let transitioned = false
-        if (record && !['deleted', 'completed'].includes(record.state)) {
-          transitioned = record.state !== 'quarantined'
-          record.state = 'quarantined'
-          record.progress = 100
-          record.error = POLICY_REVOKED
-          record.processor = null
-          record.dispositionReason = this.#safePolicyReason(reason)
-          await transaction.recordings.save(record)
-          if (DELETE_BYTES_ON_REVOKE.has(meetingRecord.retentionState)) await transaction.recordings.clearContent(record.id)
+  async #quarantineRecording(meetingRecord, recordingId, reason, suppliedTransaction = null) {
+    const quarantine = async (transaction = null) => {
+      const recordings = transaction?.recordings ?? this.recordings
+      const knowledge = transaction?.knowledge ?? this.knowledge
+      const commitments = transaction?.commitments ?? this.commitments
+      const record = transaction
+        ? (await recordings.get(recordingId))
+        : (await recordings.get(meetingRecord.tenantId, recordingId))
+      let transitioned = false
+      if (record && !['deleted', 'completed'].includes(record.state)) {
+        transitioned = record.state !== 'quarantined'
+        record.state = 'quarantined'
+        record.progress = 100
+        record.error = POLICY_REVOKED
+        record.processor = null
+        record.dispositionReason = this.#safePolicyReason(reason)
+        await recordings.save(record)
+        if (DELETE_BYTES_ON_REVOKE.has(meetingRecord.retentionState)) {
+          if (transaction) await recordings.clearContent(record.id)
+          else await recordings.clearContent(meetingRecord.tenantId, record.id)
         }
-        await transaction.knowledge.clearMeeting(meetingRecord.id)
-        await transaction.commitments.clearMeeting(meetingRecord.id)
-        if (transitioned && record && meetingRecord.retentionState !== 'deleted') {
-          await this.#emitOutbox({
-            tenantId: meetingRecord.tenantId,
-            type: 'recording.quarantined', aggregateType: 'recording', aggregateId: record.id,
-            revision: 'quarantined',
-            payload: Object.freeze({ state: 'quarantined', reason: this.#safePolicyReason(reason) }),
-          }, transaction)
-        }
-      }))
+      }
+      if (transaction) {
+        await knowledge.clearMeeting(meetingRecord.id)
+        await commitments.clearMeeting(meetingRecord.id)
+      } else {
+        await knowledge.clearMeeting(meetingRecord.tenantId, meetingRecord.id)
+        await commitments.clearMeeting(meetingRecord.tenantId, meetingRecord.id)
+      }
+      if (transitioned && record && meetingRecord.retentionState !== 'deleted') {
+        await this.#emitOutbox({
+          tenantId: meetingRecord.tenantId,
+          type: 'recording.quarantined', aggregateType: 'recording', aggregateId: record.id,
+          revision: 'quarantined',
+          payload: Object.freeze({ state: 'quarantined', reason: this.#safePolicyReason(reason) }),
+        }, transaction)
+      }
     }
-    const record = (await this.recordings?.get(meetingRecord.tenantId, recordingId))
-    let transitioned = false
-    if (record && !['deleted', 'completed'].includes(record.state)) {
-      transitioned = record.state !== 'quarantined'
-      record.state = 'quarantined'
-      record.progress = 100
-      record.error = POLICY_REVOKED
-      record.processor = null
-      record.dispositionReason = this.#safePolicyReason(reason)
-      await this.recordings.save(record)
-      if (DELETE_BYTES_ON_REVOKE.has(meetingRecord.retentionState)) await this.recordings.clearContent(meetingRecord.tenantId, record.id)
-    }
-    await this.knowledge.clearMeeting(meetingRecord.tenantId, meetingRecord.id)
-    await this.commitments.clearMeeting(meetingRecord.tenantId, meetingRecord.id)
-    if (transitioned && record && meetingRecord.retentionState !== 'deleted') {
-      await this.#emitOutbox({
-        tenantId: meetingRecord.tenantId,
-        type: 'recording.quarantined', aggregateType: 'recording', aggregateId: record.id,
-        revision: 'quarantined',
-        payload: Object.freeze({ state: 'quarantined', reason: this.#safePolicyReason(reason) }),
-      })
-    }
+    if (suppliedTransaction) return quarantine(suppliedTransaction)
+    if (this.#tenantTransaction) return this.#tenantTransaction(meetingRecord.tenantId, quarantine)
+    return quarantine()
   }
 
   async #quarantine(meetingRecord, reason) {
@@ -919,6 +911,22 @@ export class MeetingIntelligencePlatform {
       meetingId: recording?.meetingId ?? null, recordingId: recording?.id ?? null,
       outcome: 'denied', reason: this.#safePolicyReason(reason),
     })
+  }
+
+  // Background processing is not wrapped in a request's #audited boundary.
+  // A policy-revocation quarantine therefore commits its required denial audit
+  // in the same tenant transaction; otherwise an audit outage could leave an
+  // unaudited content-disposition transition behind.
+  async #quarantineAndAuditProcessingDenial(meetingRecord, recordingId, correlationId, actor, reason) {
+    const quarantine = async (transaction = null) => {
+      await this.#quarantineRecording(meetingRecord, recordingId, reason, transaction)
+      await this.#audit({
+        correlationId, principal: actor, action: 'recording.process.complete',
+        meetingId: meetingRecord.id, recordingId, outcome: 'denied', reason: this.#safePolicyReason(reason),
+      }, transaction)
+    }
+    if (this.#tenantTransaction) return this.#tenantTransaction(meetingRecord.tenantId, quarantine)
+    return quarantine()
   }
 
   async #processorFailure(recordingId, correlationId, actor) {
@@ -1256,8 +1264,7 @@ export class MeetingIntelligencePlatform {
     let meetingRecord = (await this.#meeting(recording.tenantId, recording.meetingId))
     let decision = this.#recordingPolicyDecision(actor, meetingRecord, recording)
     if (!decision.allowed) {
-      await this.#quarantineRecording(meetingRecord, recording.id, decision.code)
-      await this.#auditProcessingDenial(correlationId, actor, recording, decision.code)
+      await this.#quarantineAndAuditProcessingDenial(meetingRecord, recording.id, correlationId, actor, decision.code)
       return
     }
 
@@ -1282,8 +1289,7 @@ export class MeetingIntelligencePlatform {
       if (recording) {
         decision = this.#recordingPolicyDecision(actor, meetingRecord, recording)
         if (!decision.allowed) {
-          await this.#quarantineRecording(meetingRecord, recording.id, decision.code)
-          await this.#auditProcessingDenial(correlationId, actor, recording, decision.code)
+          await this.#quarantineAndAuditProcessingDenial(meetingRecord, recording.id, correlationId, actor, decision.code)
           return
         }
       }
@@ -1299,8 +1305,7 @@ export class MeetingIntelligencePlatform {
     meetingRecord = (await this.#meeting(recording.tenantId, recording.meetingId))
     decision = this.#recordingPolicyDecision(actor, meetingRecord, recording)
     if (!decision.allowed) {
-      await this.#quarantineRecording(meetingRecord, recording.id, decision.code)
-      await this.#auditProcessingDenial(correlationId, actor, recording, decision.code)
+      await this.#quarantineAndAuditProcessingDenial(meetingRecord, recording.id, correlationId, actor, decision.code)
       return
     }
 

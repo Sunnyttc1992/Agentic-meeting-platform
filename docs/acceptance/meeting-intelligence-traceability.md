@@ -159,7 +159,7 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 | SEC-05 | done | Database rejects audit edits (SQLite, PostgreSQL) | External audit sink |
 | SEC-06 | done | none | Watermarking, link expiry |
 | SEC-07 | done | none | none at M |
-| SEC-08 | partial | Allowed request transitions and processor terminal transitions roll back when the audit append fails | KMS outage tests; policy-revocation background audit resilience |
+| SEC-08 | partial | Allowed request transitions, processor terminal transitions, and background policy-revocation quarantines roll back when the audit append fails | KMS outage tests |
 | AI-01 | done | none | none at M |
 | AI-02 | done | none | none at M |
 | AI-03 | done | none | Model/pipeline version on every claim |

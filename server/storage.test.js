@@ -216,6 +216,49 @@ test('an audit outage cannot queue processing for a rolled-back recording transi
   assert.equal(storage.scope({ tenantId: 'northstar' }).recordings.get(created.recordingId).state, 'uploaded')
 })
 
+test('a background policy-revocation quarantine rolls back when its required audit cannot be written', async () => {
+  const storage = createInMemoryMeetingStorage({
+    shouldFailAuditAppend: (event) => event.action === 'recording.process.complete' && event.outcome === 'denied',
+  })
+  const jobs = []
+  const platform = new MeetingIntelligencePlatform({
+    storage, policy: new PolicyEngine(), clock: new FixedClock('2026-10-03T12:00:00Z'),
+    speechProcessor: new FakeSpeechProcessor(), schedule: (job) => jobs.push(job),
+  })
+  const alex = { tenantId: 'northstar', userId: 'alex' }
+  const sam = { tenantId: 'northstar', userId: 'sam' }
+  const bytes = Buffer.from('background audit rollback fixture')
+  await platform.createMeeting(alex, {
+    id: 'background-audit', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex', 'sam'], classification: 'standard',
+  })
+  for (const actor of [alex, sam]) {
+    await platform.recordConsent(actor, 'background-audit', {
+      participantId: actor.userId, decision: 'granted', policyVersion: 'v1',
+      capturedAt: '2026-10-03T11:00:00Z', expiresAt: '2026-10-04T11:00:00Z',
+    })
+  }
+  const lease = await platform.authorizeRecording(alex, 'background-audit')
+  const created = await platform.createRecording(alex, 'background-audit', {
+    leaseId: lease.leaseId, contentType: 'audio/webm', byteLength: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'),
+  })
+  await platform.uploadRecording(alex, 'background-audit', created.recordingId, {
+    contentType: 'audio/webm', contentLength: bytes.length, bytes,
+  })
+  await platform.startProcessing(alex, 'background-audit', created.recordingId, 'background-queue')
+
+  await storage.transaction({ tenantId: 'northstar' }, (transaction) => {
+    const meeting = transaction.meetings.get('background-audit')
+    meeting.consentPolicyVersion = 'v2'
+    transaction.meetings.save(meeting)
+  })
+
+  await assert.rejects(async () => (await jobs.shift()()), /Injected audit append failure/)
+  const scope = storage.scope({ tenantId: 'northstar' })
+  assert.equal(scope.recordings.get(created.recordingId).state, 'queued')
+  assert.equal(scope.outbox.list().some((event) => event.type === 'recording.quarantined'), false)
+  assert.equal(scope.audit.chain().some((event) => event.action === 'recording.process.complete' && event.outcome === 'denied'), false)
+})
+
 test('storage-backed platform emits tenant-scoped canonical lifecycle events without leaking content or processor metadata', async () => {
   const storage = createInMemoryMeetingStorage()
   const jobs = []
