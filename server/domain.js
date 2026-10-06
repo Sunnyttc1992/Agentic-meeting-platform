@@ -34,6 +34,8 @@ export function meeting(input) {
   invariant(Array.isArray(input.participantIds) && input.participantIds.length > 0, 'INVALID_MEETING', 'At least one participant is required')
   return {
     id: input.id,
+    title: input.title ?? null,
+    createdAt: input.createdAt ?? null,
     tenantId: input.tenantId,
     organizerId: input.organizerId,
     participantIds: [...new Set(input.participantIds)],

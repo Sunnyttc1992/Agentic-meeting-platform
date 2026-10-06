@@ -80,7 +80,7 @@ const SAFE_AUDIT_REASONS = new Set([
   'TEAMS_NOT_CONNECTED', 'INVALID_TEAMS_IMPORT', 'INVALID_TEAMS_MEETING_ID', 'INVALID_TEAMS_IMPORT_SOURCE',
 ])
 const SAFE_AUDIT_ACTIONS = new Set([
-  'meeting.create', 'consent.record', 'recording.preflight', 'recording.create', 'recording.upload',
+  'meeting.create', 'meeting.list', 'consent.record', 'recording.preflight', 'recording.create', 'recording.upload',
   'recording.process', 'recording.process.retry', 'recording.process.complete', 'recording.status', 'recording.delete',
   'recording.authorization.status',
   'transcript.append', 'knowledge.assertions.add', 'knowledge.read', 'knowledge.search',
@@ -961,6 +961,18 @@ export class MeetingIntelligencePlatform {
     return (await this.#audited(actor, correlationId, 'meeting.create', body?.id, async () => {
       invariant(actor.tenantId === body.tenantId && actor.userId === body.organizerId, 'CREATE_FORBIDDEN', 'Organizer must create the meeting in their tenant', 403)
       return (await this.meetings.save(meeting(body)))
+    }))
+  }
+
+  async listMeetings(input, correlationId = randomUUID()) {
+    const actor = principal(input)
+    return (await this.#audited(actor, correlationId, 'meeting.list', null, async () => {
+      const records = await this.meetings.list(actor.tenantId)
+      return records.filter((record) => (record.organizerId === actor.userId || record.participantIds.includes(actor.userId)) && record.retentionState === 'active')
+        // Retire the exact historical no-title local demo record. New meetings
+        // require a title at the HTTP boundary, so this cannot hide real data.
+        .filter((record) => record.id !== 'meeting-1' || typeof record.title === 'string')
+        .map((record) => Object.freeze({ id: record.id, title: typeof record.title === 'string' && record.title.trim() ? record.title : 'Untitled meeting', organizerId: record.organizerId, participantIds: Object.freeze([...record.participantIds]), classification: record.classification, createdAt: record.createdAt ?? null, recordingStatus: record.recording?.status ?? 'not-authorized' }))
     }))
   }
 

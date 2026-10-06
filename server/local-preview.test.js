@@ -44,6 +44,15 @@ const consent = (actor) => {
   }
 }
 
+async function createMeeting(base) {
+  const response = await fetch(`${base}/meetings`, {
+    method: 'POST', headers: headers(organizer, 'preview-create'),
+    body: JSON.stringify({ title: 'Local preview test', participantIds: [participant.userId], classification: 'standard' }),
+  })
+  assert.equal(response.status, 201)
+  return (await response.json()).meeting.id
+}
+
 test('local preview serves the client and its same-origin recording API', async () => {
   await withPreview(async (base) => {
     const shell = await fetch(`${base}/`)
@@ -54,19 +63,20 @@ test('local preview serves the client and its same-origin recording API', async 
     assert.equal(asset.status, 200)
     assert.match(await asset.text(), /previewReady/)
 
+    const meetingId = await createMeeting(base)
     for (const actor of [organizer, participant]) {
-      const response = await fetch(`${base}/meetings/meeting-1/consent`, {
+      const response = await fetch(`${base}/meetings/${meetingId}/consent`, {
         method: 'POST', headers: headers(actor, `consent-${actor.userId}`), body: JSON.stringify(consent(actor)),
       })
       assert.equal(response.status, 204)
     }
-    const preflight = await fetch(`${base}/meetings/meeting-1/recording/preflight`, {
+    const preflight = await fetch(`${base}/meetings/${meetingId}/recording/preflight`, {
       method: 'POST', headers: headers(organizer, 'preview-preflight'), body: '{}',
     })
     assert.equal(preflight.status, 200)
     assert.equal((await preflight.json()).status, 'authorized')
 
-    const unknownApi = await fetch(`${base}/meetings/meeting-1/unknown`, {
+    const unknownApi = await fetch(`${base}/meetings/${meetingId}/unknown`, {
       headers: headers(organizer, 'preview-missing-route'),
     })
     assert.equal(unknownApi.status, 404)
@@ -103,13 +113,14 @@ test('local preview rejects malformed paths without falling back and continues s
     assert.equal(shell.status, 200)
     assert.match(await shell.text(), /Meeting preview/)
 
+    const meetingId = await createMeeting(base)
     for (const actor of [organizer, participant]) {
-      const response = await fetch(`${base}/meetings/meeting-1/consent`, {
+      const response = await fetch(`${base}/meetings/${meetingId}/consent`, {
         method: 'POST', headers: headers(actor, `malformed-path-consent-${actor.userId}`), body: JSON.stringify(consent(actor)),
       })
       assert.equal(response.status, 204)
     }
-    const preflight = await fetch(`${base}/meetings/meeting-1/recording/preflight`, {
+    const preflight = await fetch(`${base}/meetings/${meetingId}/recording/preflight`, {
       method: 'POST', headers: headers(organizer, 'malformed-path-preflight'), body: '{}',
     })
     assert.equal(preflight.status, 200)

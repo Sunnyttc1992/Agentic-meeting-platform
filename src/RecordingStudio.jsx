@@ -6,7 +6,7 @@ import { normalizeIngestMimeType, SPEECH_WAV_MIME_TYPE } from "./recordingFormat
 import { toSpeechWav } from "./audioTranscode.js"
 import { downloadMeetingRecord } from "./meetingExport.js"
 
-const MEETING_ID = "meeting-1"
+const DEFAULT_MEETING_ID = "meeting-1"
 // Leases stay short-lived; the studio renews one this long before it expires,
 // and each renewal re-runs consent and policy checks on the server.
 const LEASE_RENEWAL_LEAD_MS = 90_000
@@ -15,7 +15,7 @@ const AUTHORIZATION_STATUS_POLL_MS = 5_000
 // Consent covers one meeting session, so a long meeting is not cut off mid-way.
 const CONSENT_VALIDITY_MS = 4 * 60 * 60 * 1000
 const TENANT_ID = "northstar"
-const participants = [
+const DEFAULT_PARTICIPANTS = [
   { id: "alex", name: "Alex Morgan", role: "Organizer" },
   { id: "sam", name: "Sam Rivera", role: "Participant" },
 ]
@@ -90,15 +90,15 @@ async function api(path, { userId = "alex", body = {} } = {}) {
 
 const authHeaders = (userId = "alex") => ({ "x-tenant-id": TENANT_ID, "x-user-id": userId, "x-correlation-id": crypto.randomUUID() })
 export async function sha256Hex(blob, subtle = crypto.subtle) { return [...new Uint8Array(await subtle.digest("SHA-256", await blob.arrayBuffer()))].map((byte) => byte.toString(16).padStart(2, "0")).join("") }
-export async function uploadLocalRecording({ blob, leaseId, fetchImpl = fetch, onCreated = () => {}, onQueued = () => {} }) {
+export async function uploadLocalRecording({ meetingId = DEFAULT_MEETING_ID, blob, leaseId, fetchImpl = fetch, onCreated = () => {}, onQueued = () => {} }) {
   const contentType = normalizeIngestMimeType(blob.type)
   if (!contentType) throw new Error('This recording has an unsupported or missing audio format. Please record again using a supported browser.')
   const sha256 = await sha256Hex(blob)
-  const createdResponse = await fetchImpl(`/meetings/${MEETING_ID}/recordings`, { method:"POST", headers:{...authHeaders(),"content-type":"application/json"}, body:JSON.stringify({leaseId,contentType,byteLength:blob.size,sha256}) })
+  const createdResponse = await fetchImpl(`/meetings/${meetingId}/recordings`, { method:"POST", headers:{...authHeaders(),"content-type":"application/json"}, body:JSON.stringify({leaseId,contentType,byteLength:blob.size,sha256}) })
   const created = await createdResponse.json(); if(!createdResponse.ok) throw Object.assign(new Error(created?.error?.message??"Could not create recording."),{code:created?.error?.code})
   onCreated(created.recordingId)
   const uploadResponse = await fetchImpl(created.uploadRoute,{method:"PUT",headers:{...authHeaders(),"content-type":contentType,"content-length":String(blob.size)},body:blob}); if(!uploadResponse.ok){const error=await uploadResponse.json();throw Object.assign(new Error(error?.error?.message??"Upload failed."),{code:error?.error?.code})}
-  const startResponse = await fetchImpl(`/meetings/${MEETING_ID}/recordings/${created.recordingId}/process`,{method:"POST",headers:{...authHeaders(),"content-type":"application/json"},body:"{}"}); if(!startResponse.ok){const error=await startResponse.json();throw Object.assign(new Error(error?.error?.message??"Processing failed to start."),{code:error?.error?.code})}
+  const startResponse = await fetchImpl(`/meetings/${meetingId}/recordings/${created.recordingId}/process`,{method:"POST",headers:{...authHeaders(),"content-type":"application/json"},body:"{}"}); if(!startResponse.ok){const error=await startResponse.json();throw Object.assign(new Error(error?.error?.message??"Processing failed to start."),{code:error?.error?.code})}
   onQueued(created.recordingId)
   return created.recordingId
 }
@@ -115,18 +115,18 @@ const PROCESSOR_COPY = {
   "local-whisper-pyannote-transcript-only": { label: "LOCAL WHISPER · PYANNOTE" },
 }
 const TRANSCRIPT_ONLY_MODES = new Set(["local-whisper-transcript-only", "local-whisper-pyannote-transcript-only"])
-const participantName = (id) => participants.find((person) => person.id === id)?.name ?? id
+const participantName = (id, participants = DEFAULT_PARTICIPANTS) => participants.find((person) => person.id === id)?.name ?? id
 // An owner is shown only when the meeting named a participant; otherwise the
 // anonymous label of the speaker who took the task on, marked unverified.
-const actionOwner = (commitment) => commitment?.ownerId
-  ? participantName(commitment.ownerId)
+const actionOwner = (commitment, participants) => commitment?.ownerId
+  ? participantName(commitment.ownerId, participants)
   : commitment?.speakerLabel ? `${commitment.speakerLabel} · unverified` : "Unassigned"
 const AGREEMENT_LABELS = { committed: "Committed", proposed: "Proposed" }
 const dueDate = (iso) => iso ? new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }) : "Not stated"
 
 // Every generated item shows the transcript moments it cites. Items the
 // platform could not tie to this transcript were withheld before storage.
-export function MeetingIntelligenceResult({ result, onDownload = null }) {
+export function MeetingIntelligenceResult({ result, onDownload = null, participants = DEFAULT_PARTICIPANTS }) {
   const segments = result?.segments ?? []
   const assertions = result?.assertions ?? []
   const mode = segments[0]?.provenance?.mode ?? assertions[0]?.provenance?.mode
@@ -149,7 +149,7 @@ export function MeetingIntelligenceResult({ result, onDownload = null }) {
     {actions.length > 0 && <section className="action-plan"><span>Action plan</span>
       <div className="action-plan-table" role="table" aria-label="Action plan">
         <div role="row" className="action-plan-head"><span role="columnheader">Action</span><span role="columnheader">Status</span><span role="columnheader">Owner</span><span role="columnheader">Due</span><span role="columnheader">Source</span></div>
-        {actions.map((action) => <div role="row" key={action.id}><b role="cell">{action.text}</b><span role="cell" className={`action-agreement ${action.commitment?.agreement ?? "unrecorded"}`}>{AGREEMENT_LABELS[action.commitment?.agreement] ?? "Not recorded"}</span><span role="cell">{actionOwner(action.commitment)}</span><span role="cell">{dueDate(action.commitment?.deadline)}</span><small role="cell">{sources(action.citations)}</small></div>)}
+        {actions.map((action) => <div role="row" key={action.id}><b role="cell">{action.text}</b><span role="cell" className={`action-agreement ${action.commitment?.agreement ?? "unrecorded"}`}>{AGREEMENT_LABELS[action.commitment?.agreement] ?? "Not recorded"}</span><span role="cell">{actionOwner(action.commitment, participants)}</span><span role="cell">{dueDate(action.commitment?.deadline)}</span><small role="cell">{sources(action.citations)}</small></div>)}
       </div>
       <small className="action-plan-note">Committed means someone agreed to the task; proposed means it was suggested but nobody took it on. Owners and due dates appear only when stated in the meeting. Speaker labels are anonymous and unverified.</small>
     </section>}
@@ -183,7 +183,9 @@ export async function acquireMicrophone({ getUserMedia, isActive, authorizationE
   }
 }
 
-export function RecordingStudio({ onBack }) {
+export function RecordingStudio({ onBack, meeting = { id: DEFAULT_MEETING_ID, title: 'Meeting', participantIds: DEFAULT_PARTICIPANTS.map((person) => person.id) } }) {
+  const meetingId = meeting.id
+  const participants = (meeting.participantIds ?? DEFAULT_PARTICIPANTS.map((person) => person.id)).map((id) => ({ id, name: id === 'alex' ? 'Local organizer (alex)' : id, role: id === 'alex' ? 'Organizer' : 'Participant' }))
   const [state, dispatch] = useReducer(recordingReducer, initialRecordingState)
   const [elapsed, setElapsed] = useState(0)
   const [remaining, setRemaining] = useState(0)
@@ -255,7 +257,7 @@ export function RecordingStudio({ onBack }) {
     let timer
     const attempt = async () => {
       try {
-        const result = await api(`/meetings/${MEETING_ID}/recording/preflight`)
+        const result = await api(`/meetings/${meetingId}/recording/preflight`)
         if (!cancelled) dispatch({ type: "LEASE_RENEWED", leaseId: result.leaseId, authorizationExpiresAt: result.authorizationExpiresAt })
       } catch (error) {
         if (cancelled) return
@@ -281,7 +283,7 @@ export function RecordingStudio({ onBack }) {
     let cancelled = false
     const check = async () => {
       try {
-        const response = await fetch(`/meetings/${MEETING_ID}/recording/authorization-status`, { headers: authHeaders() })
+        const response = await fetch(`/meetings/${meetingId}/recording/authorization-status`, { headers: authHeaders() })
         if (!response.ok || cancelled) return
         const status = await response.json()
         if (!status.active) {
@@ -299,7 +301,7 @@ export function RecordingStudio({ onBack }) {
 
   useEffect(() => {
     if (!state.recordingId || !["queued","processing"].includes(state.phase)) return undefined
-    const timer=setInterval(async()=>{ try { const response=await fetch(`/meetings/${MEETING_ID}/recordings/${state.recordingId}`,{headers:authHeaders()}); if(response.status===429)return; const result=await response.json(); if(!response.ok) throw new Error(result?.error?.message); setProcessingResult(result); dispatch({type:"PROCESS_STATUS",state:result.recording.state,progress:result.recording.progress,result,error:result.recording.error}) } catch(error){dispatch({type:"ERROR",error:error.message})} },350)
+    const timer=setInterval(async()=>{ try { const response=await fetch(`/meetings/${meetingId}/recordings/${state.recordingId}`,{headers:authHeaders()}); if(response.status===429)return; const result=await response.json(); if(!response.ok) throw new Error(result?.error?.message); setProcessingResult(result); dispatch({type:"PROCESS_STATUS",state:result.recording.state,progress:result.recording.progress,result,error:result.recording.error}) } catch(error){dispatch({type:"ERROR",error:error.message})} },350)
     return()=>clearInterval(timer)
   },[state.recordingId,state.phase])
 
@@ -307,7 +309,7 @@ export function RecordingStudio({ onBack }) {
     const isActive = () => mountedRef.current && requestGenerationRef.current === generation
     dispatch({ type: "OPEN" })
     try {
-      const result = await api(`/meetings/${MEETING_ID}/recording/preflight`)
+      const result = await api(`/meetings/${meetingId}/recording/preflight`)
       if (!isActive()) return
       dispatch({ type: "PREFLIGHT_AUTHORIZED", leaseId: result.leaseId, authorizationExpiresAt: result.authorizationExpiresAt, allowedMimeTypes: result.allowedMimeTypes })
       if (!isActive()) return
@@ -351,7 +353,7 @@ export function RecordingStudio({ onBack }) {
   async function setConsent(participantId, decision) {
     try {
       const now = new Date()
-      await api(`/meetings/${MEETING_ID}/consent`, {
+      await api(`/meetings/${meetingId}/consent`, {
         userId: participantId,
         body: { participantId, capturedAt: now.toISOString(), expiresAt: new Date(now.getTime() + CONSENT_VALIDITY_MS).toISOString(), policyVersion: "v1", decision, method: "explicit" },
       })
@@ -391,7 +393,7 @@ export function RecordingStudio({ onBack }) {
     const reason = "Stopped for a sensitive topic. The audio captured so far was discarded and cannot be uploaded."
     dispatch({ type: "POLICY_STOP", reason })
     try {
-      await api(`/meetings/${MEETING_ID}/recording/stop`, { body: { reason: "sensitive-topic" } })
+      await api(`/meetings/${meetingId}/recording/stop`, { body: { reason: "sensitive-topic" } })
     } catch (error) {
       if (mountedRef.current) dispatch({ type: "POLICY_STOP", reason: `${reason} The server could not record the stop (${error.message}); the authorization still expires on its own.` })
     }
@@ -407,7 +409,7 @@ export function RecordingStudio({ onBack }) {
   // policy before re-queueing; the studio only offers what status reports.
   async function retryProcessing() {
     try {
-      const response = await fetch(`/meetings/${MEETING_ID}/recordings/${state.recordingId}/retry`, { method: "POST", headers: { ...authHeaders(), "content-type": "application/json" }, body: "{}" })
+      const response = await fetch(`/meetings/${meetingId}/recordings/${state.recordingId}/retry`, { method: "POST", headers: { ...authHeaders(), "content-type": "application/json" }, body: "{}" })
       const result = await response.json()
       if (!response.ok) throw Object.assign(new Error(result?.error?.message ?? "Retry could not start."), { code: result?.error?.code })
       dispatch({ type: "UPLOAD_COMPLETE" })
@@ -426,6 +428,7 @@ export function RecordingStudio({ onBack }) {
     try {
       if (transcribes) blob = await toSpeechWav(blob)
       await uploadLocalRecording({
+        meetingId,
         blob,
         leaseId:state.leaseId,
         onCreated:(recordingId)=>dispatch({type:"UPLOAD_CREATED",recordingId}),
@@ -443,7 +446,7 @@ export function RecordingStudio({ onBack }) {
     </header>
 
     <section className="capture-hero">
-      <div><p className="eyebrow">Q4 PRODUCT &amp; GO-TO-MARKET REVIEW</p><h1>Start a trusted record.</h1><p className="capture-intro">Consent and policy are checked before capture and re-checked while recording. After stopping, you choose whether to transcribe the recording and generate its summary and action plan.</p></div>
+      <div><p className="eyebrow">{meeting.title?.toUpperCase() ?? 'LOCAL MEETING'}</p><h1>Start a trusted record.</h1><p className="capture-intro">Consent and policy are checked before capture and re-checked while recording. After stopping, you choose whether to transcribe the recording and generate its summary and action plan.</p></div>
       <div className={`capture-status status-${state.phase}`} aria-live="polite"><i /> {state.phase.replaceAll("-", " ")}</div>
     </section>
 
@@ -466,7 +469,7 @@ export function RecordingStudio({ onBack }) {
         {state.phase === "recording" && <div className="live-stage" data-capture-source={mockMode ? "synthetic-fixture" : "microphone"}><div className="live-pulse"><i /><span>{mockMode ? "SYNTHETIC TEST ACTIVE" : "RECORDING ACTIVE"}</span></div><div className="elapsed">{displayTime(elapsed)}</div><div className="signal" aria-label={mockMode ? "Synthetic fixture progress; no microphone input or audio" : "Microphone input active"} aria-hidden={mockMode ? "true" : undefined}>{[1,2,3,4,5,6,7,8,9,10,11,12].map((bar) => <i key={bar} style={{"--bar": `${20 + ((bar * 23) % 70)}%`}} />)}</div><CaptureTruthfulCopy mode={mockMode ? "synthetic" : "real"} phase="recording" /><button className="stop-button" onClick={userStop}><Stop size={18} weight="fill" /> {mockMode ? "Stop synthetic fixture" : "Stop recording"}</button></div>}
         {state.phase === "stopped" && <div className="center-state" data-capture-source={fixtureMode ? "synthetic-fixture" : "microphone"}><Check size={38} /><p className="stage-index">{fixtureMode ? "SYNTHETIC TEST COMPLETE" : "CAPTURE COMPLETE"}</p><h2>{fixtureMode ? "Synthetic fixture complete." : "Audio preserved locally."}</h2><CaptureTruthfulCopy mode={fixtureMode ? "synthetic" : "real"} phase="stopped" />{audioUrl && !fixtureMode && <audio className="audio-player" src={audioUrl} controls aria-label="Captured microphone audio review" />}<div className="capture-actions">{!fixtureMode && <button className="record-button" onClick={processLocally}><Waveform size={17}/> Process locally</button>}<button className="discard-button" onClick={discard}><Trash size={17} /> Discard permanently</button></div></div>}
         {["hashing","uploading","queued","processing"].includes(state.phase) && <div className="center-state"><Waveform size={40}/><p className="stage-index">{state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "LOCAL TRANSCRIPTION" : "LOCAL DETERMINISTIC PROCESSOR"}</p><h2>{state.phase === "hashing"?"Preparing and verifying audio…":state.phase === "uploading"?"Uploading to this machine's processor…":state.phase === "queued"?"Queued for processing…":state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE)?"Transcribing and summarizing…":"Building cited intelligence…"}</h2><div className="progress-track"><i style={{width:`${state.progress}%`}}/></div><p>{state.progress}% · {state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "speech is transcribed on this machine; long meetings take a few minutes" : "development fake, not real speech recognition or diarization"}</p></div>}
-        {state.phase === "completed" && <MeetingIntelligenceResult result={processingResult} onDownload={async () => { const result = await downloadMeetingRecord({ meetingId: MEETING_ID }); if (!result.ok) window.alert(result.message) }} />}
+        {state.phase === "completed" && <MeetingIntelligenceResult result={processingResult} participants={participants} onDownload={async () => { const result = await downloadMeetingRecord({ meetingId }); if (!result.ok) window.alert(result.message) }} />}
         {state.phase === "failed" && <div className="center-state danger-state"><Warning size={42} /><p className="stage-index">PROCESSING FAILED</p><h2>The recording could not be processed.</h2><p>{processingResult?.recording?.retryAvailable ? "The audio is still held on this machine. You can try again; consent and policy are checked again first." : "The retry limit was reached or the audio is no longer available. Please record the meeting again."}</p>{processingResult?.recording?.retryAvailable ? <button className="copper-button" onClick={retryProcessing}>Retry processing</button> : <button className="copper-button" onClick={() => preflight()}>Start a new recording</button>}</div>}
         {state.phase === "discarded" && <div className="center-state"><ShieldCheck size={40} /><h2>Audio discarded.</h2><p>Microphone access ended and all in-memory chunks were cleared.</p><button className="copper-button" onClick={() => preflight()}>Start a new consent check</button></div>}
         {["blocked", "policy-stopped", "error"].includes(state.phase) && <div className="center-state danger-state"><Warning size={42} /><p className="stage-index">CAPTURE STOPPED</p><h2>{state.phase === "blocked" ? "Policy prevents recording." : "Recording cannot continue."}</h2><p>{state.error || state.stopReason}</p>{state.phase === "error" && <button className="copper-button" onClick={() => preflight()}>Try again</button>}</div>}

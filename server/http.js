@@ -95,6 +95,14 @@ function validateAiRetrieve(body) {
   return body
 }
 
+function validateMeetingCreate(body) {
+  strictObject(body, ['title', 'participantIds', 'classification'], ['title', 'participantIds', 'classification'])
+  if (typeof body.title !== 'string' || body.title.trim().length < 1 || body.title.trim().length > 120) throw new DomainError('INVALID_REQUEST', 'title must be 1 to 120 characters', 400)
+  if (!Array.isArray(body.participantIds) || body.participantIds.length > 24 || body.participantIds.some((id) => typeof id !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(id))) throw new DomainError('INVALID_REQUEST', 'participantIds must be up to 24 local identifiers', 400)
+  if (!['standard', 'internal'].includes(body.classification)) throw new DomainError('INVALID_REQUEST', 'classification must be standard or internal', 400)
+  return { title: body.title.trim(), participantIds: [...new Set(body.participantIds.map((id) => id.trim()).filter(Boolean))], classification: body.classification }
+}
+
 export function createHttpHandler(platform, { pipelineReadiness = createPipelineReadiness(), rateLimiter = createRateLimiter() } = {}) {
   return async (request, response) => {
     let correlationId = randomUUID()
@@ -130,6 +138,15 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
       const statusMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings\/([^/]+)$/)
       const deleteMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings$/)
       const teamsImportMatch = url.pathname.match(/^\/meetings\/([^/]+)\/integrations\/microsoft-teams\/import$/)
+      if (request.method === 'GET' && url.pathname === '/meetings') return json(response, 200, { meetings: await platform.listMeetings(principalFrom(request), correlationId) })
+      if (request.method === 'POST' && url.pathname === '/meetings') {
+        const body = validateMeetingCreate(await readJson(request)
+        )
+        const actor = principalFrom(request)
+        const participantIds = [...new Set([actor.userId, ...body.participantIds])]
+        const record = await platform.createMeeting(actor, { id: randomUUID(), tenantId: actor.tenantId, organizerId: actor.userId, participantIds, requiredParticipantIds: participantIds, classification: body.classification, consentPolicyVersion: 'v1', title: body.title, createdAt: new Date().toISOString() }, correlationId)
+        return json(response, 201, { meeting: { id: record.id, title: record.title, organizerId: record.organizerId, participantIds: record.participantIds, classification: record.classification, createdAt: record.createdAt } })
+      }
       if (request.method === 'GET' && url.pathname === '/pipeline/readiness') {
         const teamsReadiness = await platform.getTeamsReadiness(principalFrom(request), correlationId)
         return json(response, 200, pipelineReadiness.inspect({ teamsReadiness }))

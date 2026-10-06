@@ -74,21 +74,6 @@ export async function createDevelopmentPlatform({ speechProcessor = createSpeech
     // The real pipeline transcribes only verified 16 kHz mono WAV.
     acceptedMimeTypes: speechProcessor instanceof FakeSpeechProcessor ? RECORDING_MIME_TYPES : [SPEECH_WAV_MIME_TYPE],
   })
-  // Seed the demo meeting only once. With durable storage, re-creating it on
-  // every start would erase its consent, retention clock, and history.
-  if (!(await platform.meetings.get('northstar', 'meeting-1'))) await platform.createMeeting(
-    { tenantId: 'northstar', userId: 'alex' },
-    {
-      id: 'meeting-1',
-      tenantId: 'northstar',
-      organizerId: 'alex',
-      participantIds: ['alex', 'sam'],
-      requiredParticipantIds: ['alex', 'sam'],
-      classification: 'standard',
-      consentPolicyVersion: 'v1',
-    },
-    'development-seed',
-  )
   for (const tenantId of DEVELOPMENT_TENANTS) await platform.recoverInterruptedProcessing(tenantId, 'development-startup')
   return platform
 }
