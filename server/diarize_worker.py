@@ -28,6 +28,24 @@ def parse_arguments():
     return parser.parse_args()
 
 
+def load_speech_wav(input_path):
+    """Decode the server's validated 16-bit PCM mono 16 kHz WAV in memory.
+
+    Passing a waveform instead of a path keeps pyannote from invoking its
+    FFmpeg-backed decoder, so the worker runs no codec on meeting audio.
+    """
+    import wave
+
+    import torch
+
+    with wave.open(str(input_path), "rb") as reader:
+        if (reader.getcomptype(), reader.getnchannels(), reader.getsampwidth(), reader.getframerate()) != ("NONE", 1, 2, 16000):
+            raise RuntimeError("Audio must be 16-bit PCM, mono, 16 kHz")
+        frames = reader.readframes(reader.getnframes())
+    samples = torch.frombuffer(bytearray(frames), dtype=torch.int16).to(torch.float32) / 32768.0
+    return {"waveform": samples.unsqueeze(0), "sample_rate": 16000}
+
+
 def main():
     args = parse_arguments()
     model_path = Path(args.model).resolve(strict=True)
@@ -39,7 +57,7 @@ def main():
     from pyannote.audio import Pipeline
 
     pipeline = Pipeline.from_pretrained(str(model_path))
-    result = pipeline(str(input_path))
+    result = pipeline(load_speech_wav(input_path))
     # Community-1 exposes an exclusive track specifically for reconciling
     # diarization with transcription timestamps. Fall back only for an older
     # compatible result shape.

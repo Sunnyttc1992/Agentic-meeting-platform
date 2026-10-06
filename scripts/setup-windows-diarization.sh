@@ -190,7 +190,15 @@ banner "Meeting Ledger local speaker diarization on Windows"
 
 stage "Preflight"
 say "This provisions a local, offline pyannote Community-1 pilot. It keeps this app loopback-only and produces anonymous labels only."
-step "Run this from Git Bash in the repository. Install Python 3.10 or 3.11, Git for Windows, Git LFS, and FFmpeg first."
+case "$(uname -s)" in
+  MINGW*|MSYS*) ;;
+  *)
+    warn "This shell is not Git Bash (from PowerShell, plain 'bash' usually opens WSL)."
+    say "Rerun with: & \"C:\\Program Files\\Git\\bin\\bash.exe\" scripts/setup-windows-diarization.sh"
+    exit 1
+    ;;
+esac
+step "Run this from Git Bash in the repository. Install Python 3.10 or 3.11, Git for Windows, and Git LFS first. FFmpeg is not needed: the worker decodes the server's PCM WAV itself."
 step "Choose a protected directory writable by the Meeting Ledger service account for the Python environment, model, temporary files, and provenance inventory."
 if command -v git >/dev/null 2>&1 && command -v git-lfs >/dev/null 2>&1; then
   note "Found git and git-lfs on PATH."
