@@ -82,6 +82,7 @@ const SAFE_AUDIT_REASONS = new Set([
 const SAFE_AUDIT_ACTIONS = new Set([
   'meeting.create', 'consent.record', 'recording.preflight', 'recording.create', 'recording.upload',
   'recording.process', 'recording.process.retry', 'recording.process.complete', 'recording.status', 'recording.delete',
+  'recording.authorization.status',
   'transcript.append', 'knowledge.assertions.add', 'knowledge.read', 'knowledge.search',
   'ai.retrieve', 'privacy-access.read', 'meeting.export', 'retention.expire',
   'commitment.query',
@@ -1095,6 +1096,25 @@ export class MeetingIntelligencePlatform {
       await this.meetings.save(meetingRecord)
       return structuredClone(meetingRecord.recording)
     }))
+  }
+
+  // Participants poll this minimal capability while capture is open. It does
+  // not mint, refresh, or disclose a lease; it only tells an authorized
+  // participant whether their local microphone must stop now.
+  async getRecordingAuthorizationStatus(input, meetingId, correlationId = randomUUID()) {
+    const actor = principal(input)
+    return this.#audited(actor, correlationId, 'recording.authorization.status', meetingId, async () => {
+      const meetingRecord = await this.#meeting(actor.tenantId, meetingId)
+      invariant(meetingRecord.participantIds.includes(actor.userId), 'MEETING_NOT_FOUND', 'Meeting not found', 404)
+      const lease = meetingRecord.recording
+      const organizer = { tenantId: meetingRecord.tenantId, userId: meetingRecord.organizerId }
+      const policy = this.policy.recordingPreflight({ principal: organizer, meeting: meetingRecord, now: this.clock.now() })
+      const active = lease?.status === 'authorized'
+        && new Date(lease.authorizationExpiresAt) > this.clock.now()
+        && this.#leaseMatchesCurrentPolicy(meetingRecord, lease)
+        && policy.allowed
+      return Object.freeze({ active: Boolean(active), authorizationExpiresAt: active ? lease.authorizationExpiresAt : null })
+    })
   }
 
   async createRecording(input, meetingId, body, correlationId = randomUUID()) {

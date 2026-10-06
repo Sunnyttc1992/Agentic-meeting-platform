@@ -71,6 +71,16 @@ test('a participant stops capture for a sensitive topic: the boundary is recorde
   assert.notEqual(fresh.leaseId, lease.leaseId, 'capture can resume only through a new preflight')
 })
 
+test('participants can poll only a minimal authorization status and see a remote stop promptly', async () => {
+  const { platform, audit } = await setup()
+  await platform.authorizeRecording(alex, 'meeting-1')
+  assert.deepEqual(await platform.getRecordingAuthorizationStatus(sam, 'meeting-1', 'status-live'), { active: true, authorizationExpiresAt: '2026-10-01T12:01:00.000Z' })
+  await platform.stopCapture(sam, 'meeting-1', { reason: 'participant-request' })
+  assert.deepEqual(await platform.getRecordingAuthorizationStatus(alex, 'meeting-1', 'status-revoked'), { active: false, authorizationExpiresAt: null })
+  await assert.rejects(platform.getRecordingAuthorizationStatus(outsider, 'meeting-1'), { code: 'MEETING_NOT_FOUND' })
+  assert.ok(audit.all().some((event) => event.correlationId === 'status-revoked' && event.action === 'recording.authorization.status' && event.outcome === 'allowed'))
+})
+
 test('a stop after upload quarantines that recording, deletes its audio, and its queued job publishes nothing', async () => {
   const { platform, recordings, knowledge, jobs } = await setup()
   const lease = await platform.authorizeRecording(alex, 'meeting-1')

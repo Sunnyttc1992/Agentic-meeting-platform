@@ -11,6 +11,7 @@ const MEETING_ID = "meeting-1"
 // and each renewal re-runs consent and policy checks on the server.
 const LEASE_RENEWAL_LEAD_MS = 90_000
 const LEASE_RENEWAL_RETRY_MS = 15_000
+const AUTHORIZATION_STATUS_POLL_MS = 5_000
 // Consent covers one meeting session, so a long meeting is not cut off mid-way.
 const CONSENT_VALIDITY_MS = 4 * 60 * 60 * 1000
 const TENANT_ID = "northstar"
@@ -274,6 +275,27 @@ export function RecordingStudio({ onBack }) {
     // stopRecorder and the capture ref are stable for the mounted studio.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.authorizationExpiresAt, state.phase])
+
+  useEffect(() => {
+    if (state.phase !== "recording") return undefined
+    let cancelled = false
+    const check = async () => {
+      try {
+        const response = await fetch(`/meetings/${MEETING_ID}/recording/authorization-status`, { headers: authHeaders() })
+        if (!response.ok || cancelled) return
+        const status = await response.json()
+        if (!status.active) {
+          stopRecorder(true)
+          dispatch({ type: "POLICY_STOP", reason: "Recording authorization was revoked elsewhere. Audio captured in this tab was discarded." })
+        }
+      } catch { /* expiry and renewal remain fail-closed if the network stays unavailable */ }
+    }
+    check()
+    const timer = setInterval(check, AUTHORIZATION_STATUS_POLL_MS)
+    return () => { cancelled = true; clearInterval(timer) }
+    // stopRecorder is stable for the mounted studio.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.phase])
 
   useEffect(() => {
     if (!state.recordingId || !["queued","processing"].includes(state.phase)) return undefined

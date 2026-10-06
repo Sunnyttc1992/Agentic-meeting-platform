@@ -120,6 +120,7 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
       const privacyAccessMatch = url.pathname.match(/^\/meetings\/([^/]+)\/privacy-access$/)
       const consentMatch = url.pathname.match(/^\/meetings\/([^/]+)\/consent$/)
       const preflightMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recording\/preflight$/)
+      const authorizationStatusMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recording\/authorization-status$/)
       const stopMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recording\/stop$/)
       const recordingsMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings$/)
       const bytesMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings\/([^/]+)\/bytes$/)
@@ -151,6 +152,7 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
         const authorization = await platform.authorizeRecording(principalFrom(request), preflightMatch[1], correlationId)
         return json(response, 200, { status: authorization.status, leaseId: authorization.leaseId, authorizationExpiresAt: authorization.authorizationExpiresAt, allowedMimeTypes: authorization.allowedMimeTypes, maxBytes: authorization.maxBytes })
       }
+      if (request.method === 'GET' && authorizationStatusMatch) return json(response, 200, await platform.getRecordingAuthorizationStatus(principalFrom(request), authorizationStatusMatch[1], correlationId))
       if (request.method === 'POST' && stopMatch) {
         const body = await readJson(request)
         strictObject(body, ['reason'], ['reason'])
