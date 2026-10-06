@@ -58,6 +58,32 @@ function isNonSpeech(samples) {
   return active >= 0.95 && variation(rms, meanRms) < 0.08 && meanCrossings > 0.005 && variation(crossings, meanCrossings) < 0.08
 }
 
+// Whisper's chunked decoding (30 s windows with overlap) can emit, at a window
+// boundary, a segment squeezed into a few milliseconds that repeats sentences
+// already transcribed next to it. A segment is suspect only when its speaking
+// rate is physically implausible; from a suspect segment, only sentences that
+// appear in a neighbouring segment are removed, so no unique words are lost
+// and normally paced repetition ("Yes. Yes.") is never touched.
+const MAX_PLAUSIBLE_WORDS_PER_SECOND = 8
+const NEIGHBOURS = 2
+const words = (text) => text.split(/\s+/).filter(Boolean).length
+const comparable = (text) => text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+
+function withoutBoundaryRepeats(segments) {
+  return segments.flatMap((segment, index) => {
+    const seconds = Math.max(segment.endMs - segment.startMs, 250) / 1000
+    if (words(segment.text) / seconds <= MAX_PLAUSIBLE_WORDS_PER_SECOND) return [segment]
+    const nearby = segments.slice(Math.max(0, index - NEIGHBOURS), index).concat(segments.slice(index + 1, index + 1 + NEIGHBOURS))
+      .map((item) => comparable(item.text))
+    const sentences = segment.text.match(/[^.!?]+[.!?]*/g) ?? [segment.text]
+    const kept = sentences.filter((sentence) => {
+      const key = comparable(sentence)
+      return key && !nearby.some((text) => text.includes(key))
+    }).join(' ').replace(/\s+/g, ' ').trim()
+    return kept && /[\p{L}\p{N}]/u.test(kept) ? [{ ...segment, text: kept }] : []
+  })
+}
+
 // Whisper runs in this Node process (ONNX via transformers.js). Meeting audio
 // never leaves the machine; the only network access is the one-time model
 // weight download from the Hugging Face hub into `.cache/models`.
@@ -106,6 +132,6 @@ export class LocalWhisperTranscriber {
       if (STOCK_SILENCE_HALLUCINATION.test(text) && isNonSpeech(clipSamples(samples, boundedStart, endMs, durationMs))) continue
       segments.push({ startMs: boundedStart, endMs, text })
     }
-    return segments
+    return withoutBoundaryRepeats(segments)
   }
 }

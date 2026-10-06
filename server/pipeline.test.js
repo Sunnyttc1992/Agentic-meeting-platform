@@ -80,6 +80,27 @@ test('the Whisper transcriber drops stock silence hallucinations from silent or 
   ])
 })
 
+test('a squeezed window-boundary segment loses only sentences its neighbours already hold', async () => {
+  // Reproduces local Whisper output observed at a 25 s window boundary.
+  const transcriber = new LocalWhisperTranscriber({ loadPipeline: async () => async () => ({ chunks: [
+    { timestamp: [20.4, 24.9], text: 'The security assessment also came back with two open findings.' },
+    { timestamp: [24.9, 25.0], text: 'Then we should not sign until both findings are closed. I will send the remediation. The security assessment also came back with two open findings. Budget is fine.' },
+    { timestamp: [25.0, 28.0], text: 'Then we should not sign until both findings are closed.' },
+    { timestamp: [28.0, 32.0], text: 'I will send the remediation plan to the vendor by Friday.' },
+    { timestamp: [32.0, 33.0], text: 'Yes. Yes. Yes.' },
+    { timestamp: [33.0, 34.0], text: 'Yes.' },
+  ] }) })
+  const segments = await transcriber.transcribe(Buffer.from(encodeWavPcm16(tone(35))))
+  assert.deepEqual(segments.map((segment) => segment.text), [
+    'The security assessment also came back with two open findings.',
+    'Budget is fine.',
+    'Then we should not sign until both findings are closed.',
+    'I will send the remediation plan to the vendor by Friday.',
+    'Yes. Yes. Yes.',
+    'Yes.',
+  ], 'unique words survive and normally paced repetition is untouched')
+})
+
 // Per-20 ms-frame RMS measured from Chrome's fake microphone at 16 kHz: a
 // ~350 Hz beep every 500 ms (25 frames) that decays to silence.
 const CHROME_FAKE_MIC_CYCLE = [0.2289, 0.4064, 0.0826, 0.0261, 0.0164, 0.0102, 0.0073, 0.0052, 0.0031, 0.0023, 0.0015, 0.0009, 0.0006, 0.0003, 0.0002, 0.0001]

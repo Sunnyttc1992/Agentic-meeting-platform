@@ -1,0 +1,12 @@
+A: Good morning. Let's start with the vendor renewal, because the contract expires at the end of October.
+B: Before we do, can we confirm who owns the data processing agreement for this vendor?
+A: Legal owns it. They told me the review queue is about three weeks long right now.
+B: That is a problem. The security assessment also came back with two open findings.
+A: Then we should not sign until both findings are closed. I will send the remediation plan to the vendor by Friday.
+B: Agreed. I will ask legal whether they can prioritize this contract, and I will update the launch checklist.
+A: If legal needs more time, we can ask the vendor for a two week extension.
+B: One more thing. The budget owner still has to approve the renewal amount of forty eight thousand dollars.
+A: Good point. Let's keep the January launch date, but only if the findings are closed in time.
+B: Okay. So the open question is whether we need legal sign-off for the European customers.
+A: Right. Nobody knows yet, so we will come back to it next week.
+B: Thanks, everyone. That's all for today.

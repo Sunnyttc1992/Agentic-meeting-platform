@@ -131,7 +131,7 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 | CAP-03 | partial | none | Teams connector intentionally unconnected |
 | CAP-04 | partial | `npm run benchmark:diarization`: 26 synthetic segments across clean turns, crosstalk, interjections, silences, and rapid exchange; 0 credited to the wrong voice, all crosstalk abstained | Real-audio quality benchmark |
 | CAP-05 | partial | none | Reviewed, versioned human correction flow |
-| CAP-06 | done | Real local Whisper runs | Load and failure tests |
+| CAP-06 | done | Real local Whisper runs; `npm run benchmark:real-audio` scores word error rate against a read script (2.2% on a synthetic two-voice reading; window-boundary duplicates removed) | Load and failure tests; a human-voice recording |
 | CAP-07 | done | PostgreSQL storage, migrations, RLS tests | none at M |
 | CAP-08 | done | One live OpenAI synthetic run | Evaluation set; approval packets |
 | CAP-09 | done | none | Model evaluation |
