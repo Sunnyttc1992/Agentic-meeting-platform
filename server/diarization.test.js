@@ -29,6 +29,25 @@ test('diarization labels select the greatest anonymous overlap and leave gaps un
   assert.deepEqual(result.map((item) => item.diarizationLabel), ['speaker_b', 'speaker_a', 'UNATTRIBUTED'])
 })
 
+test('crosstalk without a clear majority stays unattributed, and repeated turns of one voice add up', () => {
+  const segment = (startMs, endMs) => ({ startMs, endMs, text: 'x' })
+  const result = applyDiarizationLabels([
+    segment(0, 1_000),       // 50/50 crosstalk
+    segment(1_000, 2_000),   // 80/20: clear majority
+    segment(2_000, 3_000),   // one voice in two turns (300 + 400) vs another (300)
+    segment(3_000, 4_000),   // overlapping turns: both voices cover the whole segment
+    segment(4_000, 5_000),   // silence
+    segment(5_000, 6_000),   // a single short turn surrounded by silence
+  ], [
+    { startMs: 0, endMs: 500, label: 'voice_a' }, { startMs: 500, endMs: 1_000, label: 'voice_b' },
+    { startMs: 1_000, endMs: 1_800, label: 'voice_a' }, { startMs: 1_800, endMs: 2_000, label: 'voice_b' },
+    { startMs: 2_000, endMs: 2_300, label: 'voice_b' }, { startMs: 2_300, endMs: 2_600, label: 'voice_a' }, { startMs: 2_600, endMs: 3_000, label: 'voice_b' },
+    { startMs: 3_000, endMs: 4_000, label: 'voice_a' }, { startMs: 3_000, endMs: 4_000, label: 'voice_b' },
+    { startMs: 5_400, endMs: 5_600, label: 'voice_b' },
+  ])
+  assert.deepEqual(result.map((item) => item.diarizationLabel), ['UNATTRIBUTED', 'voice_a', 'voice_b', 'UNATTRIBUTED', 'UNATTRIBUTED', 'voice_b'])
+})
+
 test('local pyannote adapter accepts bounded output and always removes the temporary audio', async () => {
   const root = await mkdtemp(join(tmpdir(), 'meeting-diarization-test-'))
   const modelDir = join(root, 'model')

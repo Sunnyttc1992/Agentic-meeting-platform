@@ -43,6 +43,7 @@ The pilot may ship only after all of the following:
 - The model provenance, hashes, license, and offline-disconnect test are recorded.
 - A target-machine CPU result completes within the product's acceptable post-processing time, or a supported NVIDIA CUDA configuration is explicitly required and detected at startup.
 - Overlapping speech, five-or-more-speaker meetings, non-English audio, noise, and name-like speech have manual review cases. Fail closed to `UNATTRIBUTED` where labels cannot be reconciled safely.
+  - Implemented (2026-10-06): a transcript segment takes a label only when that label covers at least two-thirds of the speaker time inside it (`DOMINANT_SPEAKER_SHARE` in `server/diarization.js`); crosstalk, overlap without a clear majority, and silence stay `UNATTRIBUTED`. Verified unchanged on the synthetic two-voice recording (7/7 segments labelled).
 - The UI makes corrections easy, shows the model output as fallible, and never uses a label to grant access, verify attendance, or create a named action owner.
 - Security tests prove temporary audio cleanup, no outbound request after model installation, no token in logs/audit/API responses, and tenant-scoped results.
 

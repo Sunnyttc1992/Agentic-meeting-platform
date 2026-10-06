@@ -56,18 +56,23 @@ function safeTurns(value, durationMs) {
 // Binds a text span only to the anonymous local diarization label with the
 // greatest overlap. Ties intentionally remain deterministic but never imply
 // identity; a span without overlap stays UNATTRIBUTED.
+// A transcript segment takes the anonymous label that clearly dominates its
+// speech: at least two-thirds of the speaker time inside it, summed per label.
+// Silence, crosstalk without a clear majority, or no overlap leaves it
+// UNATTRIBUTED, so a mixed segment is never credited to one voice.
+export const DOMINANT_SPEAKER_SHARE = 2 / 3
+
 export function applyDiarizationLabels(transcript, turns) {
   return transcript.map((segment) => {
-    let selected = null
-    let overlap = 0
+    const byLabel = new Map()
     for (const turn of turns) {
       const shared = Math.max(0, Math.min(segment.endMs, turn.endMs) - Math.max(segment.startMs, turn.startMs))
-      if (shared > overlap || (shared === overlap && shared > 0 && selected && turn.label.localeCompare(selected.label) < 0)) {
-        selected = turn
-        overlap = shared
-      }
+      if (shared > 0) byLabel.set(turn.label, (byLabel.get(turn.label) ?? 0) + shared)
     }
-    return { ...segment, diarizationLabel: selected?.label ?? 'UNATTRIBUTED' }
+    const ranked = [...byLabel.entries()].sort(([labelA, a], [labelB, b]) => b - a || labelA.localeCompare(labelB))
+    const total = ranked.reduce((sum, [, shared]) => sum + shared, 0)
+    const [label, shared] = ranked[0] ?? [null, 0]
+    return { ...segment, diarizationLabel: label && shared / total >= DOMINANT_SPEAKER_SHARE ? label : 'UNATTRIBUTED' }
   })
 }
 
