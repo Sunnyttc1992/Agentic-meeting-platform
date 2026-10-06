@@ -54,3 +54,24 @@ Community-1's own card reports anonymous `speaker_*` outputs and notes its local
 1. Run `scripts/setup-windows-diarization.sh` from Git Bash to acquire the approved model, prove offline inference, and configure the local non-secret paths. No API key is needed after the local model directory has been provisioned.
 2. Define an acceptable target-machine processing budget and whether CPU-only support is required.
 3. Perform the consented evaluation and, only after a separate review, add the human mapping/correction UX. Treat attribution as a security-sensitive milestone, not a dependency upgrade.
+
+## Synthetic overlap benchmark (2026-10-06)
+
+`npm run benchmark:diarization` mixes Windows text-to-speech voices (Microsoft David and Zira) on a known timeline, runs the real local Whisper and pyannote Community-1 pipeline offline, and scores the anonymous labels with `evals/diarization-score.mjs`. Nothing leaves the machine and the synthetic audio is deleted afterwards. It exits non-zero if any segment is credited to the wrong voice.
+
+Results on this machine (26 transcript segments, about 2 minutes of audio, about 86 s of processing):
+
+| Scenario | Segments | Credited correctly | Wrong voice | Left unattributed | Labels found |
+| --- | --- | --- | --- | --- | --- |
+| Clean turns | 6 | 6 | 0 | 0 | 2 |
+| Crosstalk (1.2 s overlaps) | 6 | 4 | 0 | 2 | 2 |
+| Interjections over a monologue | 2 | 0 | 0 | 2 | 1 |
+| Long silences (6 s) | 4 | 4 | 0 | 0 | 2 |
+| Rapid exchange (one-word turns, 7.7 s) | 8 | 0 | 0 | 8 (2 of them crosstalk) | 1 |
+
+Findings:
+
+- Before the single-label rule, the rapid exchange credited 2 segments to the wrong voice and 2 crosstalk segments to one voice: pyannote merged both voices into one label. The labelling rule now leaves every segment `UNATTRIBUTED` when diarization finds fewer than two labels, because one label distinguishes no one. This is conservative: the monologue-with-interjections scenario also loses its (correct) single label.
+- The worker reads pyannote's exclusive track, so it never reports overlapping speech; crosstalk is handled by the two-thirds dominance rule instead.
+- A speaker-count hint was considered and rejected: `max_speakers` cannot fix under-splitting, and a `min_speakers` taken from the participant list would split meetings where only one person speaks.
+- Synthetic voices are cleaner and more distinct than real people. These numbers are a regression bar, not a real-audio quality estimate.

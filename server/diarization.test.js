@@ -80,11 +80,17 @@ test('local pyannote adapter accepts bounded output and always removes the tempo
 test('the meeting processor preserves anonymous diarization and never supplies identity confidence', async () => {
   const processor = new LocalMeetingProcessor({
     transcriber: { transcribe: async () => [{ startMs: 0, endMs: 500, text: 'Hello' }, { startMs: 500, endMs: 1_000, text: 'Bye' }] },
-    diarizer: { enabled: true, diarize: async () => [{ startMs: 0, endMs: 800, label: 'speaker_local_0' }] },
+    diarizer: { enabled: true, diarize: async () => [{ startMs: 0, endMs: 500, label: 'speaker_local_7' }, { startMs: 500, endMs: 1_000, label: 'speaker_local_3' }] },
   })
   const result = await processor.process({ bytes: wav() })
   assert.equal(result.processor, LOCAL_SPEECH_PROCESSOR_LABELS.diarizedTranscriptOnly)
   assert.deepEqual(result.segments.map((item) => [item.diarizationLabel, item.identityConfidence]), [
-    ['SPEAKER_00', null], ['SPEAKER_00', null],
+    ['SPEAKER_00', null], ['SPEAKER_01', null],
   ], 'worker labels are renumbered by first appearance and never carry identity')
+})
+
+test('a single diarization label distinguishes no one, so every segment stays unattributed', () => {
+  const transcript = [{ startMs: 0, endMs: 500, text: 'Right.' }, { startMs: 500, endMs: 1_000, text: 'Okay.' }]
+  assert.deepEqual(applyDiarizationLabels(transcript, [{ startMs: 0, endMs: 1_000, label: 'voice_a' }]).map((item) => item.diarizationLabel), ['UNATTRIBUTED', 'UNATTRIBUTED'])
+  assert.deepEqual(applyDiarizationLabels(transcript, []).map((item) => item.diarizationLabel), ['UNATTRIBUTED', 'UNATTRIBUTED'])
 })

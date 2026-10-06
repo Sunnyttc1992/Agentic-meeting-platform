@@ -129,13 +129,13 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 | CAP-01 | done | Isolated headless Chrome consent-to-capture smoke on loopback | Conferencing capture |
 | CAP-02 | done | Studio polls minimal authorization status every 5 seconds and discards on revocation | Measured remote-device latency |
 | CAP-03 | partial | none | Teams connector intentionally unconnected |
-| CAP-04 | partial | Local pyannote run on synthetic two-voice audio | Overlap/crosstalk fixtures; real-audio quality benchmark |
+| CAP-04 | partial | `npm run benchmark:diarization`: 26 synthetic segments across clean turns, crosstalk, interjections, silences, and rapid exchange; 0 credited to the wrong voice, all crosstalk abstained | Real-audio quality benchmark |
 | CAP-05 | partial | none | Reviewed, versioned human correction flow |
 | CAP-06 | done | Real local Whisper runs | Load and failure tests |
 | CAP-07 | done | PostgreSQL storage, migrations, RLS tests | none at M |
 | CAP-08 | done | One live OpenAI synthetic run | Evaluation set; approval packets |
 | CAP-09 | done | none | Model evaluation |
-| CAP-10 | partial | Each recording in a meeting keeps its own transcript, decisions, and actions; a later recording or a processor failure cannot replace them (in-memory, SQLite, PostgreSQL tests) | Rescinded decisions and recomputation versioning |
+| CAP-10 | partial | Each recording in a meeting keeps its own transcript, decisions, and actions; a later recording or a processor failure cannot replace them (in-memory, SQLite, PostgreSQL tests). Duplicate extractions merge with their citations; assertion and commitment IDs are stable across restarts | Rescinded-decision lineage would send earlier knowledge to the summary provider (a new data flow needing approval); recomputation versioning has no trigger because a completed recording cannot be reprocessed. Both need a product decision |
 | AUTH-01 | done | Tenant RLS in PostgreSQL | Per-participant grants in the database |
 | AUTH-02 | done | none | IdP/HR hierarchy source |
 | AUTH-03 | done | Revocation SLA is zero: no read path caches a decision. `server/revocation.test.js` revokes by grant expiry, grant withdrawal, hierarchy change, and participant removal, then sweeps knowledge, recording status, export, privacy, search, retrieval, commitments, briefing, list, and capture status; mid-retrieval revocation applies to every later source | Measured SLA once an IdP/HR source adds propagation delay |

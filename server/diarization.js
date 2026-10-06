@@ -62,7 +62,12 @@ function safeTurns(value, durationMs) {
 // UNATTRIBUTED, so a mixed segment is never credited to one voice.
 export const DOMINANT_SPEAKER_SHARE = 2 / 3
 
+// A single label distinguishes no one. Local benchmarks showed pyannote merging
+// two voices into one label in short, rapid exchanges, which would let a
+// summary credit one voice's action to everyone. With fewer than two labels,
+// every segment therefore stays UNATTRIBUTED.
 export function applyDiarizationLabels(transcript, turns) {
+  if (new Set(turns.map((turn) => turn.label)).size < 2) return transcript.map((segment) => ({ ...segment, diarizationLabel: 'UNATTRIBUTED' }))
   return transcript.map((segment) => {
     const byLabel = new Map()
     for (const turn of turns) {
