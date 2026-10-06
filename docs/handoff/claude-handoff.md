@@ -1,5 +1,7 @@
 # Handoff for Claude
 
+> Superseded on 2026-10-06 by `docs/handoff/codex-handoff.md`, which describes the current state (OpenAI provider, capture stop, deletion, eval). Read that first; this file keeps the diarization provisioning history.
+
 Read this whole file, then AGENTS.md, before changing the project.
 
 ## Current project state
