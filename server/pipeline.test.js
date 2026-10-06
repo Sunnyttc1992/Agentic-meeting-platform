@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { FixedClock, InMemoryAppendOnlyAudit, InMemoryKnowledgeRepository, InMemoryMeetingRepository, InMemoryRecordingRepository } from './adapters/in-memory.js'
 import { hasAnthropicCredentials } from './development.js'
-import { ClaudeMeetingIntelligence, DEFAULT_SUMMARY_MODEL } from './intelligence.js'
+import { ClaudeMeetingIntelligence, createAnthropicClient, DEFAULT_SUMMARY_MODEL } from './intelligence.js'
 import { isLoopbackRequest, isMeetingApiPath } from './local-only.js'
 import { MeetingIntelligencePlatform } from './platform.js'
 import { PolicyEngine } from './policy.js'
@@ -197,6 +197,18 @@ test('Claude sees anonymous speaker labels, and the action plan keeps only label
     ['Prepare the cost comparison.', ['S2', 'S3'], { ownerId: null, deadline: '2026-10-08', agreement: 'committed', speakerLabel: 'SPEAKER_01' }],
     ['Schedule a check-in.', ['S3'], { ownerId: null, deadline: null, agreement: 'proposed', speakerLabel: null }],
   ], 'a label that is not in the transcript is dropped')
+})
+
+test('an organization-level key sends its configured workspace ID, and a workspace-scoped key sends none', async () => {
+  const headersOf = async (env) => {
+    let seen = null
+    const fetch = async (_url, init) => { seen = new Headers(init.headers); return new Response('{}', { status: 500 }) }
+    const client = createAnthropicClient(env, { apiKey: 'test-key-not-real', fetch, maxRetries: 0 })
+    await client.messages.create({ model: DEFAULT_SUMMARY_MODEL, max_tokens: 1, messages: [{ role: 'user', content: 'x' }] }).catch(() => {})
+    return seen
+  }
+  assert.equal((await headersOf({ ANTHROPIC_WORKSPACE_ID: ' wrkspc_example ' })).get('anthropic-workspace-id'), 'wrkspc_example')
+  assert.equal((await headersOf({})).get('anthropic-workspace-id'), null)
 })
 
 test('a Claude refusal or malformed reply fails closed with only PROCESSOR_FAILED and stores nothing', async () => {

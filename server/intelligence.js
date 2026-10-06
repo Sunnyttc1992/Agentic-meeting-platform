@@ -91,8 +91,15 @@ function formatTimestamp(ms) {
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
 }
 
+// An organization-level API key must name its workspace on every request; a
+// workspace-scoped key needs nothing. The workspace ID is not a secret.
+export function createAnthropicClient(env = process.env, options = {}) {
+  const workspaceId = String(env.ANTHROPIC_WORKSPACE_ID ?? '').trim()
+  return new Anthropic({ ...options, ...(workspaceId ? { defaultHeaders: { 'anthropic-workspace-id': workspaceId } } : {}) })
+}
+
 export class ClaudeMeetingIntelligence {
-  constructor({ client = new Anthropic(), model = process.env.MEETING_SUMMARY_MODEL ?? DEFAULT_SUMMARY_MODEL } = {}) {
+  constructor({ client = createAnthropicClient(), model = process.env.MEETING_SUMMARY_MODEL ?? DEFAULT_SUMMARY_MODEL } = {}) {
     this.client = client
     this.model = model
   }
