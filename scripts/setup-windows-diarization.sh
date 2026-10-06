@@ -210,6 +210,15 @@ stage "Choose the local paths and install the runtime"
 say "The base Python is used only to create an isolated runtime. The server will use the virtual-environment Python path instead."
 ask BASE_PYTHON "Paste the full path to Python 3.10 or 3.11 (for example C:/Python311/python.exe):"
 ask MODEL_ROOT "Paste the protected parent directory for local diarization assets:"
+# Accept pasted Windows paths: drop surrounding quotes/whitespace and use forward slashes.
+normalize_path() {
+  local p="$1"
+  p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"
+  p="${p#\"}"; p="${p%\"}"; p="${p#\'}"; p="${p%\'}"
+  printf '%s' "${p//\\//}"
+}
+BASE_PYTHON=$(normalize_path "$BASE_PYTHON")
+MODEL_ROOT=$(normalize_path "$MODEL_ROOT")
 if [[ -z "$BASE_PYTHON" || -z "$MODEL_ROOT" ]]; then
   warn "Both paths are required. Stop now and rerun when they are available."
   exit 1
