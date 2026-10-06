@@ -1,6 +1,6 @@
 # Local speaker diarization options
 
-Status: research only; no diarization model is installed or enabled.
+Status: local worker integration is implemented; no diarization model is installed or enabled.
 
 ## Decision boundary
 
@@ -20,7 +20,7 @@ Primary sources: [pyannote toolkit](https://github.com/pyannote/pyannote-audio),
 
 ## Recommended pilot: local pyannote worker
 
-Use `pyannote.audio` Community-1 in a version-pinned Python virtual environment started only by the Node server. The Node pipeline writes the already-authorized decrypted WAV to a restricted, per-job temporary directory, invokes the local worker with an input path and an output path, parses strictly bounded JSON containing timestamps and anonymous labels, then removes the temporary audio and worker output in a `finally` path. The worker has no listener, no browser access, no cloud endpoint, and no access to the app's PostgreSQL or Anthropic credentials.
+The implemented `LocalPyannoteDiarizer` uses an operator-provisioned, version-pinned `pyannote.audio` Community-1 Python environment started only by the Node server. It writes the already-authorized decrypted WAV to a restricted, per-job temporary directory, invokes the local worker with an input path and an output path, parses strictly bounded JSON containing timestamps and anonymous labels, then removes the temporary audio and worker output in a `finally` path. The worker has no listener, no browser access, no cloud endpoint, and no access to the app's PostgreSQL or Anthropic credentials.
 
 The current operator reports an NVIDIA RTX 3080 (10 GB) and Python 3.10/3.11 are available. That makes a CUDA pilot practical because PyTorch supports Windows CUDA, but it is not a capacity commitment: record the selected Python, PyTorch/CUDA, driver, model revision, processing time, and peak VRAM in the acceptance evidence. CPU remains the safe fallback only if it meets the agreed processing budget.
 
@@ -48,8 +48,8 @@ The pilot may ship only after all of the following:
 
 Community-1's own card reports anonymous `speaker_*` outputs and notes its local runtime; NeMo's model card likewise frames diarization output as time ranges plus a speaker index. Those facts support the strict distinction above between diarization and identity, rather than asserting a biometric identity claim. [Community-1 output](https://github.com/pyannote/pyannote-audio#community-1-open-source-speaker-diarization), [Sortformer output](https://huggingface.co/nvidia/diar_sortformer_4spk-v1).
 
-## Work still required after approval
+## Remaining work after approval
 
-1. Obtain approval for Community-1 acquisition and attribution; no API key for inference is needed after the local model directory has been provisioned.
+1. Run `scripts/setup-windows-diarization.sh` from Git Bash to acquire the approved model, prove offline inference, and configure the local non-secret paths. No API key is needed after the local model directory has been provisioned.
 2. Define an acceptable target-machine processing budget and whether CPU-only support is required.
-3. Add a Python worker boundary, strict schema validation, encrypted-audio temporary-file lifecycle, test fixtures, and a human mapping/correction UX. Treat this as a new security-sensitive implementation milestone, not a dependency upgrade.
+3. Perform the consented evaluation and, only after a separate review, add the human mapping/correction UX. Treat attribution as a security-sensitive milestone, not a dependency upgrade.

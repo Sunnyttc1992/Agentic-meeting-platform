@@ -40,7 +40,12 @@ def main():
 
     pipeline = Pipeline.from_pretrained(str(model_path))
     result = pipeline(str(input_path))
-    annotation = getattr(result, "speaker_diarization", result)
+    # Community-1 exposes an exclusive track specifically for reconciling
+    # diarization with transcription timestamps. Fall back only for an older
+    # compatible result shape.
+    annotation = getattr(result, "exclusive_speaker_diarization", None)
+    if annotation is None:
+        annotation = getattr(result, "speaker_diarization", result)
     turns = []
     for turn, _, label in annotation.itertracks(yield_label=True):
         start_ms = max(0, round(float(turn.start) * 1000))

@@ -31,6 +31,7 @@ Open **Test secure recording**, grant consent for both participants, record, sto
 | `WHISPER_MODEL` | `onnx-community/whisper-base` | Local Whisper model; `onnx-community/whisper-small` is more accurate but slower |
 | `WHISPER_LANGUAGE` | `en` | Spoken language |
 | `MEETING_PROCESSOR` | `local` | Set to `fake` for the deterministic development processor |
+| `DIARIZATION_PYTHON` + `DIARIZATION_MODEL_DIR` | unset | Enables the local, offline pyannote Community-1 worker |
 
 Meetings, consent, transcripts, action plans, and the audit trail are saved in `.data/meeting-ledger.sqlite`, so they survive a restart. Recording audio is stored encrypted (AES-256-GCM) with a key generated on first run at `.data/keys/recording-audio-v1.key`.
 
@@ -41,6 +42,7 @@ Meetings, consent, transcripts, action plans, and the audit trail are saved in `
 - **Other locations:** `MEETING_DATA_DIR` points the server at another folder. `npm run dev` uses `.data/vite-dev/`.
 - **Self-hosted PostgreSQL:** set `DATABASE_URL` and `MEETING_AUDIO_KEY_FILE` to use PostgreSQL instead of SQLite. Setup, roles, TLS, migrations (`npm run db:migrate`), and backups are in [docs/architecture/self-hosted-postgres.md](../docs/architecture/self-hosted-postgres.md).
 - **Windows PostgreSQL operations:** the Windows-specific TLS, backup/restore, monitoring, HA boundary, and audio-key-rotation guidance is in [docs/architecture/windows-postgres-operations.md](../docs/architecture/windows-postgres-operations.md). Run `bash scripts/setup-windows-postgres.sh` from Git Bash or WSL for the repeatable local setup flow.
+- **Local speaker diarization:** remains disabled until an operator provisions the approved Community-1 model. Run `bash scripts/setup-windows-diarization.sh` from Git Bash. It opens the gated-model approval page, installs an isolated local runtime, acquires the model once with an interactive token prompt, proves offline execution, and writes only three non-secret paths to `.env`. It never stores a Hugging Face token. See [the options and safeguards](../docs/architecture/local-speaker-diarization-options.md).
 
 Recordings up to about 80 minutes are accepted. Data flow, controls, and the remaining blockers to wider delivery are documented in [docs/security/local-meeting-pipeline.md](../docs/security/local-meeting-pipeline.md).
 
