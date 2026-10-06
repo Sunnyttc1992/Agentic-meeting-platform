@@ -80,6 +80,34 @@ test('the Whisper transcriber drops stock silence hallucinations from silent or 
   ])
 })
 
+// Per-20 ms-frame RMS measured from Chrome's fake microphone at 16 kHz: a
+// ~350 Hz beep every 500 ms (25 frames) that decays to silence.
+const CHROME_FAKE_MIC_CYCLE = [0.2289, 0.4064, 0.0826, 0.0261, 0.0164, 0.0102, 0.0073, 0.0052, 0.0031, 0.0023, 0.0015, 0.0009, 0.0006, 0.0003, 0.0002, 0.0001]
+function chromeFakeMicrophone(seconds) {
+  return Float32Array.from({ length: 16_000 * seconds }, (_, index) => {
+    const rms = CHROME_FAKE_MIC_CYCLE[Math.floor((index % 8000) / 320)] ?? 0
+    return rms * Math.SQRT2 * Math.sin((2 * Math.PI * 350 * index) / 16_000)
+  })
+}
+
+test('stock Whisper phrases over Chrome fake-microphone clicks are dropped, in any of their known forms', async () => {
+  for (const text of ['Thanks for watching!', 'Thank you for watching.', 'Thank you so much for watching!', 'you', 'Please subscribe.']) {
+    const transcriber = new LocalWhisperTranscriber({ loadPipeline: async () => async () => ({ chunks: [{ timestamp: [0, 2], text }] }) })
+    assert.deepEqual(await transcriber.transcribe(Buffer.from(encodeWavPcm16(chromeFakeMicrophone(2)))), [], text)
+  }
+})
+
+test('a short spoken phrase between silences is kept, and other text over clicks is never dropped', async () => {
+  // 300 ms of speech-like sound inside one second of silence.
+  const spoken = new Float32Array(16_000)
+  for (let index = 5000; index < 9800; index += 1) {
+    spoken[index] = (0.05 + 0.2 * ((Math.sin(index / 731) + 1) / 2)) * Math.sin(index / (5 + (index % 23)))
+  }
+  const say = (text) => new LocalWhisperTranscriber({ loadPipeline: async () => async () => ({ chunks: [{ timestamp: [0, 1], text }] }) })
+  assert.deepEqual(await say('Thank you.').transcribe(Buffer.from(encodeWavPcm16(spoken))), [{ startMs: 0, endMs: 1000, text: 'Thank you.' }])
+  assert.deepEqual(await say('Ship it in January.').transcribe(Buffer.from(encodeWavPcm16(chromeFakeMicrophone(1)))), [{ startMs: 0, endMs: 1000, text: 'Ship it in January.' }])
+})
+
 function fakeClaude(payload, { stopReason = 'end_turn' } = {}) {
   const requests = []
   return {

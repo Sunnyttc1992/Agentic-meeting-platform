@@ -2,7 +2,9 @@ import { fileURLToPath } from 'node:url'
 import { parseSpeechWav } from './wav.js'
 
 const defaultCacheDir = fileURLToPath(new URL('../.cache/models', import.meta.url))
-const STOCK_SILENCE_HALLUCINATION = /^(?:thank you|thanks for watching)[.!?]*$/i
+// Phrases Whisper is known to emit over silence. They are dropped only when
+// the matching audio is also non-speech (see isNonSpeech below).
+const STOCK_SILENCE_HALLUCINATION = /^(?:you|thank you|thank you (?:so much )?for watching|thanks for watching|please subscribe)[.!?]*$/i
 const FRAME_SAMPLES = 320 // 20 ms at the validated 16 kHz input rate
 
 function clipSamples(samples, startMs, endMs, durationMs) {
@@ -12,10 +14,24 @@ function clipSamples(samples, startMs, endMs, durationMs) {
 }
 
 // This is intentionally not a general voice-activity detector. It only
-// identifies two artefacts that make Whisper emit stock phrases in our
-// microphone fixture: silence and a steady sine wave. A real phrase remains
-// eligible when its amplitude or zero-crossing pattern varies like speech.
-function isSilentOrSteadyTone(samples) {
+// identifies three artefacts that make Whisper emit stock phrases: silence, a
+// steady sine wave, and intermittent clicks (Chrome's fake microphone emits a
+// ~40 ms beep every 500 ms). A real phrase remains eligible when its amplitude
+// or zero-crossing pattern varies like speech, or when any loud stretch lasts
+// longer than a click: even a mumbled word has voiced runs beyond 80 ms.
+const MAX_CLICK_FRAMES = 4
+const MAX_CLICK_COVERAGE = 0.2
+
+function isIntermittentClicks(rms) {
+  const peak = Math.max(...rms)
+  const loud = rms.map((value) => value >= peak * 0.3)
+  let run = 0
+  let longest = 0
+  for (const value of loud) { run = value ? run + 1 : 0; longest = Math.max(longest, run) }
+  return longest <= MAX_CLICK_FRAMES && loud.filter(Boolean).length / rms.length <= MAX_CLICK_COVERAGE
+}
+
+function isNonSpeech(samples) {
   if (samples.length < FRAME_SAMPLES) return true
   const rms = []
   const crossings = []
@@ -35,6 +51,7 @@ function isSilentOrSteadyTone(samples) {
   const mean = (values) => values.reduce((total, value) => total + value, 0) / values.length
   const meanRms = mean(rms)
   if (meanRms < 0.01) return true
+  if (isIntermittentClicks(rms)) return true
   const variation = (values, average) => Math.sqrt(mean(values.map((value) => (value - average) ** 2))) / Math.max(average, 0.0001)
   const meanCrossings = mean(crossings)
   const active = rms.filter((value) => value >= 0.015).length / rms.length
@@ -86,7 +103,7 @@ export class LocalWhisperTranscriber {
       const boundedStart = Math.max(startMs, previousEnd)
       const endMs = Math.min(durationMs, Math.max(boundedStart + 1, Math.round((Number.isFinite(end) ? end : durationMs / 1000) * 1000)))
       if (endMs <= boundedStart) continue
-      if (STOCK_SILENCE_HALLUCINATION.test(text) && isSilentOrSteadyTone(clipSamples(samples, boundedStart, endMs, durationMs))) continue
+      if (STOCK_SILENCE_HALLUCINATION.test(text) && isNonSpeech(clipSamples(samples, boundedStart, endMs, durationMs))) continue
       segments.push({ startMs: boundedStart, endMs, text })
     }
     return segments

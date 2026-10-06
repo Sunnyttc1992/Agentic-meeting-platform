@@ -119,11 +119,13 @@ if (process.argv.includes('--process')) {
     if (/COMPLETE|FAILED|CAPTURE STOPPED|ERROR/.test(t) && !/QUEUED|UPLOADING|HASHING|PROCESSING ·/.test(t) && !/CAPTURE COMPLETE/.test(t)) break
   }
   await screen('after processing')
-  const completedTranscript = await evaluate(`(() => {
+  // Chrome's fake microphone is clicks, not speech. Whisper's stock silence
+  // phrases must be filtered, so processing completes with no transcript.
+  const completedWithoutSpeech = await evaluate(`(() => {
     const text = document.querySelector('.capture-shell')?.innerText.replace(/\\s+/g, ' ') ?? ''
-    return /LOCAL WHISPER\\s*·\\s*COMPLETE/i.test(text) && /Transcript\\s*·\\s*[1-9]\\d*\\s+segments/i.test(text)
+    return /·\\s*COMPLETE/i.test(text) && /No speech was recognized/i.test(text) && !/Transcript\\s*·\\s*[1-9]/i.test(text)
   })()`)
-  if (!completedTranscript) throw new Error('Expected completed local Whisper processing with at least one transcript segment')
+  if (!completedWithoutSpeech) throw new Error('Expected completed local processing that recognized no speech in the fake-microphone clicks')
 }
 const hasAudio = await evaluate(`!!document.querySelector('audio.audio-player')?.src`)
 console.log(`\naudio player present with a source: ${hasAudio}`)
