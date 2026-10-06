@@ -29,7 +29,13 @@ function sendMalformedPath(response) {
 }
 
 function sendFile(response, path) {
-  response.writeHead(200, { 'content-type': types[extname(path)] ?? 'application/octet-stream' })
+  const isHtml = extname(path) === '.html'
+  response.writeHead(200, {
+    'content-type': types[extname(path)] ?? 'application/octet-stream',
+    // The shell names a hashed bundle. Never let a browser reuse an old shell
+    // after a local rebuild, otherwise it can request an obsolete API client.
+    'cache-control': isHtml ? 'no-store' : 'public, max-age=31536000, immutable',
+  })
   createReadStream(path).pipe(response)
 }
 

@@ -57,10 +57,12 @@ test('local preview serves the client and its same-origin recording API', async 
   await withPreview(async (base) => {
     const shell = await fetch(`${base}/`)
     assert.equal(shell.status, 200)
+    assert.equal(shell.headers.get('cache-control'), 'no-store')
     assert.match(await shell.text(), /Meeting preview/)
 
     const asset = await fetch(`${base}/app.js`)
     assert.equal(asset.status, 200)
+    assert.equal(asset.headers.get('cache-control'), 'public, max-age=31536000, immutable')
     assert.match(await asset.text(), /previewReady/)
 
     const meetingId = await createMeeting(base)
