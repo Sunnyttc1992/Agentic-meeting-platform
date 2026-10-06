@@ -1,80 +1,80 @@
 # Handoff for Claude
 
-> Superseded on 2026-10-06 by `docs/handoff/codex-handoff.md`, which describes the current state (OpenAI provider, capture stop, deletion, eval). Read that first; this file keeps the diarization provisioning history.
+Read this file, then `AGENTS.md`, before changing the project. This is the current continuation brief as of 2026-10-06.
 
-Read this whole file, then AGENTS.md, before changing the project.
+## Project and checkpoint
 
-## Current project state
+- Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
+- Latest checkpoint: `acfe663 Filter stock Whisper silence hallucinations`.
+- The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
+- Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
-- Repository: D:\Data Science Project\smart-meeting-platform
-- Branch: master
-- Last committed implementation checkpoint: 771c4ec Add Windows diarization provisioning wizard
-- The diarization worker, Windows provisioning wizard, worker correction, README link, and this handoff are committed. The worktree should be clean except for the intentionally untracked local-only paths listed below.
-- Do not commit unrelated pre-existing untracked paths: .copilot/, .github/skills/secret-handling/, .npmrc, .prototype-seed/, .squad/, .vscode/, design-qa.md, or implementation-1440x1024.png.
+## Durable decisions
 
-The user explicitly approved the local pyannote Community-1 pilot. Microsoft Entra remains deferred until the company decides on rollout. PostgreSQL remains self-hosted and local on Windows; do not switch to Supabase or another hosted database. The app stays loopback-only.
+- The visual direction is **Executive Ledger**: restrained graphite surfaces, warm metallic accents, editorial typography, evidence-linked intelligence, and executive-level density.
+- The delivery remains **loopback-only on Windows**. Microsoft Entra is deferred; Microsoft Teams stays explicitly unconnected. Do not expose the API to a LAN or deploy it.
+- Storage in production is local, self-hosted PostgreSQL on Windows when `DATABASE_URL` is set, using a least-privilege application role and database RLS. SQLite remains the local fallback. Audio is AES-256-GCM encrypted with an operator-supplied key file.
+- Speech-to-text is local Whisper. Speaker diarization is local, offline pyannote Community-1. Audio and voice data never leave the machine.
+- Diarization creates anonymous, per-meeting labels only. No voiceprints, enrollment, automatic names, attendance, authorization, or action-owner assignment.
+- OpenAI is the selected summary provider (`MEETING_SUMMARY_PROVIDER=openai`; Responses API with `store: false`) because the Anthropic account has no credit. Claude remains a supported alternative. Only transcript text with anonymous labels, participant IDs, and meeting date may leave the machine.
+- Approval packets are still drafts. The available API credential is for synthetic tests only; do not process a real meeting through an external model until the organization has approved the applicable packet.
 
-## What has been completed
+## What is complete
 
-1. Windows PostgreSQL operations guide, backup script, and repeatable setup flow.
-2. Anthropic API processing approval packet. It documents the allowed outbound data and requires organizational approval before real meeting use.
-3. Entra rollout deferral recorded in AGENTS.md.
-4. Local diarization research in docs/architecture/local-speaker-diarization-options.md.
-5. Local offline diarization adapter:
-   - server/diarization.js creates a per-job temporary directory, invokes a Python worker without a shell, validates a strict bounded JSON result, and removes plaintext temporary input/output in finally.
-   - server/diarize_worker.py loads only an operator-provisioned local model. It sets offline/telemetry-disable environment flags and emits anonymous time ranges. It now prefers Community-1's exclusive diarization track for transcript reconciliation.
-   - server/speech.js applies the anonymous label with the greatest timestamp overlap. It assigns no identity or confidence.
-   - The platform remains the enforcement boundary: a participant identity can only originate from separately authorized exact roster evidence.
-   - The adapter is inactive unless both DIARIZATION_PYTHON and DIARIZATION_MODEL_DIR are set.
-6. The two time-sensitive storage tests now use a fixed clock rather than expiring with the real date.
+1. Consent-gated local recording, encrypted audio storage, local Whisper transcription, local pyannote diarization, cited LLM summaries, decisions, risks, questions, and action plans.
+2. PostgreSQL migration/operations path for Windows, least-privilege roles, RLS, encrypted recordings, and loopback-only local delivery.
+3. Capture-stop and withdrawal boundaries, SQLite physical-deletion controls, append-only consent history, and content-free hash-chained audit trails.
+4. Local diarization provisioning wizard and strict worker boundary. Model files are provisioned outside the repository; the worker runs only from operator-provided local paths.
+5. Speaker-aware actions: anonymous labels, clear-majority attribution, committed/proposed status, citations, and no invented owners.
+6. OpenAI summary adapter plus an opt-in synthetic summary evaluation (`npm run eval:summaries`; it consumes API credit and is not part of `npm test`).
+7. Headless Chrome studio smoke coverage for consent, fake microphone, record, stop, and process.
+8. Latest fix: Whisper's exact stock silence phrases (`Thank you.` and `Thanks for watching.`) are suppressed only when their matching audio span is silent or a steady sine tone. Speech-like amplitude or zero-crossing variation preserves the phrase. This deliberately is not a broad voice-activity or content filter.
 
-## Validation already performed
+## Validation at this checkpoint
 
-- npm test: 178 passing tests after the fixed-clock correction.
-- npm run build: passed.
-- npm run test:sites: passed.
-- bash -n scripts/setup-windows-diarization.sh: passed.
-- python -m py_compile server/diarize_worker.py: passed (rerun 2026-10-06 after the exclusive-track-only correction).
-- 2026-10-06 recheck: npm test 178/178, npm run build, npm run test:sites 4/4, and bash -n on the wizard all passed.
-- A fresh local preview started on 127.0.0.1:4174; GET / returned 200 and authenticated GET /pipeline/readiness returned 200. It reported loopback-only scope, local Whisper available/cached, no Anthropic credential, and Teams disconnected.
-- Native browser automation is currently unavailable because its computer-use kernel cannot write its assets. Use local HTTP checks unless that environment issue changes.
+- `npm test`: **196/196 passing**.
+- `npm run build`: passed.
+- `npm run test:sites`: **4/4 passing**.
+- `git diff --check`: passed before committing `acfe663`.
+- Earlier validation also passed `python -m py_compile server/diarize_worker.py` and `bash -n scripts/setup-windows-diarization.sh`.
+- A prior synthetic two-voice local run completed Whisper, pyannote, and OpenAI end to end; labels were anonymous and the diarization temp directory was empty afterward.
 
-## Diarization pilot status (2026-10-06)
+## Current machine facts (do not expose values)
 
-The user provisioned Community-1 with the wizard. Assets live outside the repository in D:/MeetingLedger/diarization (runtime/, speaker-diarization-community-1/ at revision 3533c8cf, tmp/, community-1-inventory.txt). .env sets DIARIZATION_PYTHON, DIARIZATION_MODEL_DIR, and MEETING_DIARIZATION_TEMP_DIR. No Hugging Face token was found in .env, the inventory, or the model's Git config.
+- `.env` is local only. Inspect names, never values. It contains the summary-provider, local diarization, audio-key, and PostgreSQL settings.
+- PostgreSQL is local on Windows and configured for loopback-only use. Do not replace it with Supabase or another hosted database.
+- The diarization runtime and Community-1 model live outside the repository under the operator-managed `D:/MeetingLedger/diarization` area.
+- Use `node --env-file-if-exists=.env server/local-preview.js` with a loopback `PORT` for a preview. Browser automation may be unavailable in some environments; HTTP readiness checks are an acceptable fallback.
 
-Wizard fixes made during provisioning:
-- From PowerShell, plain `bash` opens WSL, where Windows paths don't resolve. The wizard now exits early outside Git Bash. Run it with `& "C:\Program Files\Gitinash.exe" scripts/setup-windows-diarization.sh`.
-- Pasted Windows paths (backslashes, quotes) are normalized.
-- VS Code's terminal routes Git credential prompts to an editor pop-up via GIT_ASKPASS. The clone now unsets that, so the prompt stays in the terminal (not yet exercised interactively).
-- The worker decodes the server's validated PCM WAV with Python's `wave` module and passes an in-memory waveform to pyannote. FFmpeg is not installed on this host and is no longer needed.
+## Read next
 
-Validation on a synthetic two-voice Windows TTS WAV (35.4 s; no real meeting audio):
-- Worker on CPU (torch 2.14.1+cpu, 8 threads, no CUDA): 21.9 s cold; 16.0 s inference (real-time factor 0.45).
-- Full in-memory pipeline (local Whisper + pyannote, Claude deliberately disabled): completed in 36.9 s. 7/7 segments were attributed to the correct voice with anonymous labels, verifiedParticipantId=null, identityConfidence=null, binding unverified-diarization-only.
-- The diarization temporary directory was empty afterwards. Offline was enforced by the worker's HF offline environment flags; no firewall-level test was done.
-- Timings, licence notice, and worker commit were appended to the operator inventory.
-- The loopback preview was restarted on 127.0.0.1:4174 with diarization active (storage: PostgreSQL via DATABASE_URL). /pipeline/readiness now reports diarization status.
+1. `AGENTS.md` and `CONTEXT.md`.
+2. `server/README.md`.
+3. `docs/acceptance/meeting-intelligence-traceability.md` (update its implementation-status table if a requirement changes).
+4. `docs/security/local-meeting-pipeline.md`, `never-record-policy.md`, `retention-deletion.md`, `anthropic-api-processing-approval.md`, and `openai-api-processing-approval.md`.
+5. `docs/architecture/local-speaker-diarization-options.md` and `windows-postgres-operations.md`.
 
-## Summary provider (2026-10-06)
+## Recommended next work
 
-- The user switched summaries to OpenAI (`MEETING_SUMMARY_PROVIDER=openai`, model `gpt-5.5`, Responses API, `store: false`) because the Anthropic account has no credit. Claude remains available. Real meetings still need the provider's approval packet; the OpenAI key is for synthetic tests only.
-- Live synthetic check (35.4 s two-voice TTS WAV, meeting date 2026-10-06): completed in 38.7 s end to end. Summary, 1 decision, 1 risk, 2 questions, 3 actions; 0 withheld. "I will prepare the cost comparison ... before Thursday afternoon" became committed / SPEAKER_01 / 2026-10-08; "I will send the invitation today" became committed / SPEAKER_00 / 2026-10-06; "finalize ... by Friday" became proposed / 2026-10-09. No owner was invented. The diarization temporary directory was empty afterwards.
-- `.env` was overwritten from `.env.example` during key setup. DATABASE_URL, MEETING_AUDIO_KEY_FILE, DATABASE_POOL_MAX, and the three DIARIZATION settings must be restored before the preview server restarts, or it falls back to SQLite without diarization.
+These do not require a product decision, but preserve the stated constraints and add tests for every behavioral change:
 
-## Next actions
+1. Improve SEC-08 audit-sink failure handling. Today an operation can persist if the subsequent audit write fails. The two viable designs are recording an attempt first or making operation-plus-audit atomic; discuss the trade-off with the user before choosing because it affects existing event semantics and the PostgreSQL transaction facade.
+2. Define a PostgreSQL deletion-remnants strategy for PRIV-05 (for example, documented `VACUUM` scheduling or per-recording crypto-shredding) and update the operator documentation.
+3. Reduce cross-device capture-stop latency with a lightweight lease-status poll during capture.
 
-1. Optional: test with one consented, non-sensitive real recording through the UI. CPU diarization of a one-hour meeting is estimated at about 27 minutes in addition to Whisper.
-2. Do not enable a GPU path until its runtime/VRAM behavior is measured on this host.
-3. Done (2026-10-06): /pipeline/readiness reports diarization.configured, runtimeAvailable, and modelReady as booleans only (file-existence checks; no paths, no Python start).
-4. Build a human correction/mapping UI only after a separate review. It must be per-meeting, reversible, audited without voice embeddings/audio/transcript text, and never provide automatic identity, attendance, authorization, or action ownership.
+These require a user or organization decision first:
 
-## Non-negotiable constraints
+- approval to use a real meeting with an external summary provider;
+- Microsoft Entra rollout, then Teams connection;
+- a reviewed, reversible, audited speaker-correction/mapping interface;
+- dashboard wiring for the current static Q4 demo, because it needs explicit visual/product direction;
+- whether both LLM providers should remain supported.
 
-- No cloud speech-to-text; Whisper runs locally.
-- Claude receives only transcript text (with anonymous speaker labels, since 2026-10-06), participant IDs, and meeting date; credentials stay server-side.
-- No secret values in the browser, source control, .env.example, audit events, terminal output, or handoff.
-- No voiceprints, speaker enrollment, or automatic name assignment.
-- Do not expose the API on the LAN, deploy it, or add Entra/Teams connectivity without a new user decision.
-- Keep .openai/hosting.json, worker/index.js, scripts/prepare-sites-build.mjs, and tests/sites-worker.test.mjs intact.
-- Commit only scoped, validated changes. Never commit .data/, .cache/, dist/, node_modules/, or real credentials.
+## Non-negotiable implementation rules
+
+- Authorize before retrieval; tenant identity comes from identity, never request IDs. Cross-tenant IDs must look nonexistent.
+- Never record without current consent from every required participant and a recordable classification. Recheck policy when leases renew.
+- Treat model output as untrusted and revalidate citations, owners, dates, labels, and model identifiers before storage.
+- Keep audit data content-free and hash-chained. Do not weaken append-only safeguards.
+- Preserve `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs`.
+- Make small, scoped commits and validate with at least the relevant tests; before any Sites handoff run `npm run build` and `npm run test:sites`.
