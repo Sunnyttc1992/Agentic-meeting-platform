@@ -30,6 +30,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 7. Headless Chrome studio smoke coverage for consent, fake microphone, record, stop, and process.
 8. Latest fix: Whisper's exact stock silence phrases (`Thank you.` and `Thanks for watching.`) are suppressed only when their matching audio span is silent or a steady sine tone. Speech-like amplitude or zero-crossing variation preserves the phrase. This deliberately is not a broad voice-activity or content filter.
 9. Request-path audit fail-closed boundary: every `#audited` state transition on a storage-backed platform writes its allowed audit event in the same tenant transaction. If that append fails, the transition rolls back. Capture-stop now uses this boundary too. Processor jobs enqueue only after that transaction commits, so an audit outage cannot run a job for rolled-back recording state.
+10. Retrieval baseline: `POST /ai/retrieve` already does tenant-scoped lexical matching and rechecks meeting access for every candidate before returning prior-meeting evidence. It is **not** vector RAG and is not connected to an LLM prompt. Do not pass its current broad result directly to a model.
 
 ## Validation at this checkpoint
 
@@ -61,8 +62,9 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 These do not require a product decision, but preserve the stated constraints and add tests for every behavioral change:
 
 1. Extend SEC-08 fail-closed behavior to background processing completion/failure and any remaining scheduler-only state paths. The request path is atomic now, but the traceability matrix deliberately remains partial until those paths and broader audit-sink outage behavior are covered.
-2. Define a PostgreSQL deletion-remnants strategy for PRIV-05 (for example, documented `VACUUM` scheduling or per-recording crypto-shredding) and update the operator documentation.
-3. Reduce cross-device capture-stop latency with a lightweight lease-status poll during capture.
+2. Build a bounded retrieval layer for previous meetings: require a strict query and result limit, retrieve only after authorization, return citation-sized excerpts with meeting/source IDs, and audit each selected source. Keep it lexical until an approved local embedding model and a tenant-isolated vector-index lifecycle (creation, deletion, rebuild, backup handling) are implemented. Never send retrieval output to either external summary provider without its approval packet covering that new data flow.
+3. Define a PostgreSQL deletion-remnants strategy for PRIV-05 (for example, documented `VACUUM` scheduling or per-recording crypto-shredding) and update the operator documentation.
+4. Reduce cross-device capture-stop latency with a lightweight lease-status poll during capture.
 
 These require a user or organization decision first:
 
