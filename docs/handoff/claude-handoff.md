@@ -5,7 +5,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 ## Project and checkpoint
 
 - Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
-- Latest code checkpoint: `f1635a4 Replace seeded meeting demo with local workspace` (feature delivery began at `5390d5a`).
+- Latest code checkpoint: `5cb6595 Fail closed on background audit outages` (feature delivery began at `5390d5a`).
 - The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
 - Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
@@ -39,15 +39,17 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
     - The exporter packages only tracked files, refuses a dirty tracked release, and normalizes timestamps in its disposable staging directory for Windows `Compress-Archive` compatibility.
 15. The browser no longer starts in a seeded scenario. `LocalMeetingWorkspace` creates and lists durable local meetings through same-origin `POST`/`GET /meetings`, then opens the selected real record in the recording studio. The server derives tenant and organizer from the local development identity, validates the bounded create payload, filters the list to active participant records, and keeps meeting-list audit events content-free. The legacy no-title `meeting-1` record is hidden rather than deleted.
 16. Background processing policy revocation now fails closed on an audit outage. A recording quarantine, its derived-content clearing, and its content-free `recording.process.complete` denial audit run in one tenant transaction. If audit append fails, the queued recording and outbox remain unchanged; a later policy recheck still prevents processing.
+17. PostgreSQL recording audio now has a live key-file availability boundary. Startup refuses a missing/invalid key; each audio read/write re-verifies the configured file and rejects a missing, malformed, or changed key with `RECORDING_CONTENT_UNAVAILABLE` before writing ciphertext or returning audio. The file is pinned to its startup value, so an in-place replacement is treated as an outage rather than an unsafe pseudo-rotation. This is not a KMS/HSM or automatic rotation implementation.
 
 ## Validation at this checkpoint
 
-- `npm test`: **202/202 passing**.
+- `npm test`: **205/205 passing**.
 - `npm run build`: passed.
 - `npm run test:sites`: **4/4 passing**.
 - Parsed all three new PowerShell scripts and ran `bash -n scripts/setup-windows-postgres.sh`.
 - Export smoke test produced a 134-entry ZIP with the installer/run scripts and `.env.example`, while excluding real `.env` files, `.data`, keys, model caches, dependencies, build output, and Git history. A PostgreSQL-backed local preview also returned `200` from authenticated `/pipeline/readiness` on loopback.
 - Durable SQLite, PostgreSQL/PGlite, and node-postgres wire-protocol suites passed after the audit-boundary change.
+- PostgreSQL key-resilience tests prove missing startup configuration is rejected, a missing configured key is never regenerated, and runtime key-provider loss rejects reads/writes before ciphertext is read or persisted.
 - `git diff --check`: passed before committing `341808e`.
 - Earlier validation also passed `python -m py_compile server/diarize_worker.py` and `bash -n scripts/setup-windows-diarization.sh`.
 - A prior synthetic two-voice local run completed Whisper, pyannote, and OpenAI end to end; labels were anonymous and the diarization temp directory was empty afterward.
@@ -72,7 +74,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 
 These do not require a product decision, but preserve the stated constraints and add tests for every behavioral change:
 
-1. Run KMS/key-file outage exercises for SEC-08. Request, processor-terminal, and background policy-revocation audit paths are atomic now, but the traceability matrix remains partial until encryption-key failure behavior is covered.
+1. Run a real KMS/HSM integration and operational resilience exercise for SEC-08. The key-file path now fails closed in automated PostgreSQL tests, but the traceability matrix remains partial until a production key-management dependency is exercised.
 2. Test the prototype ZIP on a clean Windows computer with locally installed Node, Git for Windows/WSL, and PostgreSQL. Verify that it never contains secrets or data, every recipient gets fresh local credentials/key material, and the post-install server rejects a non-loopback Host header.
 3. Keep prior-meeting retrieval lexical and citation-sized until an approved local embedding model and a tenant-isolated vector-index lifecycle (creation, deletion, rebuild, backup handling) are implemented. Never send retrieval output to either external summary provider without its approval packet covering that new data flow.
 

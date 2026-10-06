@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { timingSafeEqual } from 'node:crypto'
 import { readAudioKeyFile } from './adapters/audio-encryption.js'
 import { connectPostgresStorage } from './adapters/postgres.js'
 import { openLocalDurableStorage } from './adapters/sqlite.js'
@@ -12,9 +13,18 @@ import { openLocalDurableStorage } from './adapters/sqlite.js'
 export async function openConfiguredStorage({ env = process.env, root }) {
   if (env.DATABASE_URL) {
     if (!env.MEETING_AUDIO_KEY_FILE) throw new Error('MEETING_AUDIO_KEY_FILE is required with DATABASE_URL: point it at the 32-byte recording audio key.')
+    const audioKey = readAudioKeyFile(env.MEETING_AUDIO_KEY_FILE)
+    // Keep the configured key pinned for this server lifetime. Losing its
+    // protected file or replacing it in place is an availability failure, not
+    // an invitation to encrypt new audio under an incompatible key version.
+    const audioKeyProvider = () => {
+      const current = readAudioKeyFile(env.MEETING_AUDIO_KEY_FILE)
+      if (!timingSafeEqual(audioKey, current)) throw new Error('recording audio key changed')
+      return audioKey
+    }
     const { default: pg } = await import('pg')
     const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: Number(env.DATABASE_POOL_MAX ?? 10) })
-    const { storage } = await connectPostgresStorage({ pool, audioKey: readAudioKeyFile(env.MEETING_AUDIO_KEY_FILE) })
+    const { storage } = await connectPostgresStorage({ pool, audioKey, audioKeyProvider })
     return { storage, description: 'PostgreSQL (DATABASE_URL)' }
   }
   const directory = env.MEETING_DATA_DIR ?? join(root, '.data')

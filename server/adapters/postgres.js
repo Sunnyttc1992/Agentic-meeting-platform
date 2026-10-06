@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { sealAuditEvent } from '../audit.js'
-import { invariant } from '../errors.js'
+import { DomainError, invariant } from '../errors.js'
 import { canonicalOutboxEvent, composeRepositoryStorage, tenantScope } from '../storage.js'
 import { decryptAudio, encryptAudio } from './audio-encryption.js'
 import { commitmentMatchesQuery, deriveCommitmentRows } from './in-memory.js'
@@ -22,10 +22,23 @@ import { assertLeastPrivilegeRole, assertPostgresSchemaCurrent } from './postgre
 //
 // `connect()` must return a client with `query(text, params) -> { rows }` and
 // `release()`. See connectPool (node-postgres) and the PGlite helper in tests.
-export function openPostgresStorage({ connect, audioKey, close = async () => {} }) {
+export function openPostgresStorage({ connect, audioKey, audioKeyProvider = null, close = async () => {} }) {
   invariant(typeof connect === 'function', 'INVALID_STORAGE_ADAPTER', 'A PostgreSQL connection factory is required')
   invariant(Buffer.isBuffer(audioKey) && audioKey.length === 32, 'INVALID_STORAGE_KEY', 'A 256-bit recording audio key is required', 500)
+  invariant(audioKeyProvider === null || typeof audioKeyProvider === 'function', 'INVALID_STORAGE_KEY', 'The recording audio key provider must be a function', 500)
   const active = new AsyncLocalStorage()
+  const currentAudioKey = async () => {
+    try {
+      const key = await (audioKeyProvider ? audioKeyProvider() : audioKey)
+      invariant(Buffer.isBuffer(key) && key.length === 32, 'RECORDING_CONTENT_UNAVAILABLE', 'Recording audio key is unavailable', 503)
+      return key
+    } catch (error) {
+      if (error instanceof DomainError && error.code === 'RECORDING_CONTENT_UNAVAILABLE') throw error
+      // A provider is allowed to expose only a generic availability boundary.
+      // Paths, provider errors, and key material never leave this adapter.
+      throw new DomainError('RECORDING_CONTENT_UNAVAILABLE', 'Recording audio key is unavailable', 503)
+    }
+  }
 
   async function transaction(tenantId, work) {
     const normalized = tenantScope({ tenantId }).tenantId
@@ -126,7 +139,7 @@ export function openPostgresStorage({ connect, audioKey, close = async () => {} 
       return inTenant(tenantId, async (client) => {
         const exists = (await client.query('SELECT 1 FROM recordings WHERE tenant_id = $1 AND id = $2', [tenantId, id])).rows.length > 0
         if (!exists) return false
-        const sealed = encryptAudio(audioKey, tenantId, id, bytes)
+        const sealed = encryptAudio(await currentAudioKey(), tenantId, id, bytes)
         await client.query(`INSERT INTO recording_content (tenant_id, recording_id, key_version, nonce, tag, ciphertext) VALUES ($1, $2, $3, $4, $5, $6)
           ON CONFLICT (tenant_id, recording_id) DO UPDATE SET key_version = excluded.key_version, nonce = excluded.nonce, tag = excluded.tag, ciphertext = excluded.ciphertext`,
         [tenantId, id, sealed.keyVersion, sealed.nonce, sealed.tag, sealed.ciphertext])
@@ -138,7 +151,7 @@ export function openPostgresStorage({ connect, audioKey, close = async () => {} 
       return inTenant(tenantId, async (client) => {
         const row = (await client.query('SELECT key_version, nonce, tag, ciphertext FROM recording_content WHERE tenant_id = $1 AND recording_id = $2', [tenantId, id])).rows[0]
         if (!row) return null
-        return decryptAudio(audioKey, tenantId, id, { keyVersion: row.key_version, nonce: row.nonce, tag: row.tag, ciphertext: row.ciphertext })
+        return decryptAudio(await currentAudioKey(), tenantId, id, { keyVersion: row.key_version, nonce: row.nonce, tag: row.tag, ciphertext: row.ciphertext })
       })
     },
     clearContent: (id, tenantId) => {
@@ -200,7 +213,7 @@ export function openPostgresStorage({ connect, audioKey, close = async () => {} 
 // Opens storage on a node-postgres pool. Refuses to start unless the schema is
 // migrated to exactly this server's version and the connection uses a
 // least-privilege role that row-level security actually applies to.
-export async function connectPostgresStorage({ pool, audioKey }) {
+export async function connectPostgresStorage({ pool, audioKey, audioKeyProvider = null }) {
   const client = await pool.connect()
   let refusal = null
   try {
@@ -216,5 +229,5 @@ export async function connectPostgresStorage({ pool, audioKey }) {
     await pool.end()
     throw refusal
   }
-  return openPostgresStorage({ connect: () => pool.connect(), audioKey, close: () => pool.end() })
+  return openPostgresStorage({ connect: () => pool.connect(), audioKey, audioKeyProvider, close: () => pool.end() })
 }

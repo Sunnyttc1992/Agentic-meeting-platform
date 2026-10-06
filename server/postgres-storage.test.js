@@ -169,6 +169,32 @@ test('recording audio is encrypted in the database and fails closed when tampere
   } finally { await database.close() }
 })
 
+test('a recording-key outage fails closed before PostgreSQL audio reads or writes', async () => {
+  const database = await openDatabase()
+  let keyAvailable = true
+  const audioKeyProvider = () => {
+    if (!keyAvailable) throw new Error('key source unavailable')
+    return AUDIO_KEY
+  }
+  try {
+    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, audioKeyProvider })
+    await storage.transaction({ tenantId: 'northstar' }, async (tx) => {
+      await tx.meetings.save({ id: 'key-outage', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex'] })
+      await tx.recordings.save({ id: 'key-outage-recording', tenantId: 'northstar', meetingId: 'key-outage', organizerId: 'alex' })
+      await tx.recordings.putBytes('key-outage-recording', AUDIO)
+    })
+    assert.deepEqual(Buffer.from(await storage.transaction({ tenantId: 'northstar' }, (tx) => tx.recordings.getBytes('key-outage-recording'))), AUDIO)
+
+    keyAvailable = false
+    await assert.rejects(storage.transaction({ tenantId: 'northstar' }, (tx) => tx.recordings.getBytes('key-outage-recording')), { code: 'RECORDING_CONTENT_UNAVAILABLE' })
+    await storage.transaction({ tenantId: 'northstar' }, (tx) => tx.recordings.save({ id: 'key-outage-write', tenantId: 'northstar', meetingId: 'key-outage', organizerId: 'alex' }))
+    await assert.rejects(storage.transaction({ tenantId: 'northstar' }, (tx) => tx.recordings.putBytes('key-outage-write', AUDIO)), { code: 'RECORDING_CONTENT_UNAVAILABLE' })
+
+    keyAvailable = true
+    assert.equal(await storage.transaction({ tenantId: 'northstar' }, (tx) => tx.recordings.getBytes('key-outage-write')), null, 'the outage did not write plaintext or ciphertext')
+  } finally { await database.close() }
+})
+
 test('transactions roll back on failure, nest through savepoints, and cannot switch tenants', async () => {
   const database = await openDatabase()
   try {

@@ -74,6 +74,8 @@ It refuses to start, rather than run unsafely, when:
 - the schema is not migrated, or was migrated by a newer server (`UNSUPPORTED_STORAGE_MODEL`),
 - it is connected as a superuser, a role with `BYPASSRLS`, or the owner of the tables (`INSECURE_DATABASE_ROLE`). Row-level security would not protect anything in those cases.
 
+While it is running, every PostgreSQL recording-audio read or write also verifies that the configured key file is still present, exactly 256 bits, and unchanged from startup. If that check fails, the operation fails closed and its database transaction rolls back; the service never creates a replacement key or writes new audio under an unexpected key. Restore the exact escrowed key before retrying. This is a local key-file availability control, not automated rotation or a KMS/HSM substitute.
+
 ## How tenant isolation works
 
 Every transaction sets `app.tenant_id` (transaction-local, so a pooled connection never carries it into another request). Every table has a forced row-level security policy on it. Every query also filters on `tenant_id` explicitly. A bug in the application's own checks would therefore still meet the database's.

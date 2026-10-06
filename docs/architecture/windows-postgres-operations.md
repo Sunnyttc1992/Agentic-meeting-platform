@@ -117,6 +117,7 @@ This codebase runs processing in one server process and has no durable queue or 
 Every stored recording records its key version, but the current server accepts one `MEETING_AUDIO_KEY_FILE` and has no re-encryption migration or multi-key keyring. Therefore:
 
 - Never overwrite or replace the active key file in place; doing so makes existing audio fail closed as unavailable.
+- The server verifies the active key file before every PostgreSQL audio read or write. If the file is absent, malformed, or changed, those operations fail closed and roll back; restore the exact escrowed key rather than generating a replacement.
 - Keep the current key and escrow copy until every recording encrypted with it has expired, been deleted, or been re-encrypted by a future tested migration.
 - Treat suspected key compromise as an incident: restrict access, preserve evidence, assess affected recordings, and obtain security approval before any recovery or rotation action.
 - Implement and test a multi-key read / new-key write / transactional re-encryption / rollback / disposal workflow before claiming automated key rotation.
