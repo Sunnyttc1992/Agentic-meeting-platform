@@ -109,7 +109,10 @@ Git: branch `master`; all work is committed. The untracked paths `.copilot/`, `.
   - `DATABASE_URL` was restored on 2026-10-06. It uses `meeting_app` at `localhost:5434/meeting_ledger` with `sslmode=verify-full` and `sslrootcert=C:/ProgramData/MeetingLedger/certs/root-ca.pem`.
   - PostgreSQL 18 runs as the Windows service `postgresql-x64-18`, listening on loopback only, with a certificate for `localhost`.
 - **Preview server:** running on `127.0.0.1:4174` with the current code. On 2026-10-06 it reported `storage: PostgreSQL (DATABASE_URL)`, all readiness checks were true, the summary provider was `openai`, and a non-loopback Host header was refused with 403. Restart it with `PORT=4174`, `node --env-file-if-exists=.env server/local-preview.js`.
-- **Browser automation:** unavailable in the previous sessions. Use HTTP checks against a temporary instance (for example `PORT=4180`, `MEETING_DATA_DIR=<scratch>`, `MEETING_SUMMARY_PROVIDER=none`).
+- **Browser checks:** headless Chrome works. Use `node scripts/smoke-studio-chrome.mjs http://localhost:4180/ --process` against a throwaway server.
+  - On 2026-10-06 the full studio flow passed in Chrome with a fake microphone: consent, microphone, record, stop, process, Whisper transcript.
+  - The user then confirmed real-microphone capture works on `localhost:4174` (their first failure was local browser or microphone setup, not code).
+- **Known issue:** Whisper made up "Thank you." from the fake microphone's pure tone. A guard that drops such non-speech hallucinations (for example, short stock phrases over low-voice-activity audio) before the LLM sees them is a good next task.
 
 ## Validation baseline
 
