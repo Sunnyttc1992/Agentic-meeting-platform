@@ -42,7 +42,17 @@ try {
   Get-ChildItem -LiteralPath $packageRoot -File -Recurse | ForEach-Object { $_.LastWriteTime = $archiveTimestamp }
   New-Item -ItemType Directory -Force -Path $resolvedOutput | Out-Null
   if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
-  Compress-Archive -LiteralPath $packageRoot -DestinationPath $archive -CompressionLevel Optimal
+  # ZIP entry names must use forward slashes. Compress-Archive in Windows
+  # PowerShell 5.1 writes backslashes, which non-Windows extractors reject.
+  Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+  $stagingRoot = (Get-Item -LiteralPath $packageRoot).FullName
+  $zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Create)
+  try {
+    foreach ($file in Get-ChildItem -LiteralPath $stagingRoot -File -Recurse -Force) {
+      $entryName = 'meeting-ledger/' + $file.FullName.Substring($stagingRoot.Length + 1).Replace('\', '/')
+      [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $entryName, [IO.Compression.CompressionLevel]::Optimal)
+    }
+  } finally { $zip.Dispose() }
   $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
   Set-Content -LiteralPath "$archive.sha256" -Value "$hash  $([IO.Path]::GetFileName($archive))" -NoNewline
 
