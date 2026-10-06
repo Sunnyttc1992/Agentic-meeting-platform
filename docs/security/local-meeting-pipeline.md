@@ -51,7 +51,7 @@ Status: working end to end on one machine. It is not yet deployable to other use
 2. **Production storage:** self-hosted PostgreSQL is implemented and tested (see `docs/architecture/self-hosted-postgres.md`): tenant row-level security in the database, a least-privilege role check, an append-only audit table, and encrypted audio. Still open:
    - operating it: backups, monitoring, high availability, and key rotation,
    - a managed key service if the deployment requires one.
-3. **Data processing terms:** confirm that the Anthropic organization's data-retention and processing terms are acceptable for meeting transcripts before real meetings are processed.
+3. **Data processing terms:** confirm that the Anthropic organization's data-retention and processing terms are acceptable for meeting transcripts before real meetings are processed. The decision record and review questions are in [anthropic-api-processing-approval.md](anthropic-api-processing-approval.md).
 4. **Speaker identification:** owners come only from names stated in the meeting. Diarization and verified speaker binding are not implemented.
 5. **Export lifecycle:** a downloaded file cannot be recalled. Revocation and deletion stop future exports but cannot reach copies already saved; expiring share links are not implemented.
 

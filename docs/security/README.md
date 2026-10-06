@@ -19,6 +19,7 @@ This directory defines implementation-facing controls for meeting data. These ru
 - [Authorization semantics](./authorization-policy.md)
 - [Never-record preflight](./never-record-policy.md)
 - [Retention and deletion state machine](./retention-deletion.md)
+- [Anthropic API processing approval packet](./anthropic-api-processing-approval.md)
 - [Audit event requirements](./audit-events.md)
 - [Adversarial retrieval and agent tests](./adversarial-test-catalog.md)
 
