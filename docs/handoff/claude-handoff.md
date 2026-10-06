@@ -5,7 +5,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 ## Project and checkpoint
 
 - Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
-- Latest checkpoint: `341808e Fail closed when request audit writes fail`.
+- Latest checkpoint: `5c300b7 Add bounded authorized meeting retrieval`.
 - The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
 - Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
@@ -34,7 +34,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 
 ## Validation at this checkpoint
 
-- `npm test`: **198/198 passing**.
+- `npm test`: **199/199 passing**.
 - `npm run build`: passed.
 - `npm run test:sites`: **4/4 passing**.
 - Durable SQLite, PostgreSQL/PGlite, and node-postgres wire-protocol suites passed after the audit-boundary change.
