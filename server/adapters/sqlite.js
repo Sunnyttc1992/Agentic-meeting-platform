@@ -50,7 +50,9 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
   let audioKey
   try {
     restrictToOwner(databasePath)
-    db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
+    // secure_delete overwrites deleted rows with zeros, so deleted transcripts
+    // and knowledge do not remain readable in free pages of the file.
+    db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA secure_delete = ON;')
     db.exec(SCHEMA)
     const version = db.prepare('SELECT value FROM schema_meta WHERE key = ?').get('data_model_version')?.value
     if (!version) db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run('data_model_version', MEETING_LEDGER_DATA_MODEL_VERSION)
@@ -63,6 +65,17 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
   }
 
   const sql = (text) => db.prepare(text)
+  // After content is deleted, checkpoint and truncate the write-ahead log so
+  // the deleted rows' earlier page images do not linger in the -wal file.
+  // Inside a transaction this waits until the outermost commit.
+  let purgePending = false
+  const purgeDeletedContent = () => {
+    purgePending = true
+    if (db.isTransaction) return
+    purgePending = false
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+  }
+
   const meetings = {
     save(record) {
       sql('INSERT INTO meetings (tenant_id, id, doc) VALUES (?, ?, ?) ON CONFLICT (tenant_id, id) DO UPDATE SET doc = excluded.doc')
@@ -91,6 +104,7 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
     clearMeeting(tenantId, meetingId) {
       sql('DELETE FROM segments WHERE tenant_id = ? AND meeting_id = ?').run(tenantId, meetingId)
       sql('DELETE FROM assertions WHERE tenant_id = ? AND meeting_id = ?').run(tenantId, meetingId)
+      purgeDeletedContent()
     },
   }
 
@@ -119,6 +133,7 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
       sql('DELETE FROM recording_content WHERE recording_id = ?').run(id)
       const record = recordings.get(id)
       if (record) recordings.save({ ...record, contentClearedAt: new Date().toISOString() })
+      purgeDeletedContent()
     },
   }
 
@@ -140,7 +155,7 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
       const insert = sql('INSERT INTO commitments (tenant_id, meeting_id, assertion_id, doc) VALUES (?, ?, ?, ?)')
       for (const row of deriveCommitmentRows(tenantId, meetingId, knowledgeForMeeting)) insert.run(tenantId, meetingId, row.assertionId, JSON.stringify(row))
     },
-    clearMeeting: (tenantId, meetingId) => { sql('DELETE FROM commitments WHERE tenant_id = ? AND meeting_id = ?').run(tenantId, meetingId) },
+    clearMeeting: (tenantId, meetingId) => { sql('DELETE FROM commitments WHERE tenant_id = ? AND meeting_id = ?').run(tenantId, meetingId); purgeDeletedContent() },
     query: (tenantId, query = '') => parseAll(sql('SELECT doc FROM commitments WHERE tenant_id = ? ORDER BY rowid').all(tenantId)).filter((row) => commitmentMatchesQuery(row, query)),
   }
 
@@ -163,8 +178,9 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
         if (db.isTransaction) db.exec('ROLLBACK')
         throw error
       }
+      if (purgePending) purgeDeletedContent()
     },
-    rollback: () => { if (db.isTransaction) db.exec('ROLLBACK') },
+    rollback: () => { if (db.isTransaction) db.exec('ROLLBACK'); purgePending = false },
     beginNested: (depth) => {
       const savepoint = `meeting_ledger_${depth}`
       db.exec(`SAVEPOINT ${savepoint}`)

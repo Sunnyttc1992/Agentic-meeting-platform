@@ -190,6 +190,30 @@ test('a job interrupted by a restart comes back failed and retryable, and then c
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
 
+test('deleted meeting content is not left readable in the SQLite database or its write-ahead log', async () => {
+  const directory = tempDirectory()
+  try {
+    const { platform, durable } = openPlatform(directory)
+    await seedMeeting(platform)
+    const recordingId = (await uploadAudio(platform))
+    await platform.startProcessing(alex, 'meeting-1', recordingId)
+    await settle()
+    assert.equal((await platform.getRecording(alex, 'meeting-1', recordingId)).recording.state, 'completed')
+    await platform.deleteMeetingContent(alex, 'meeting-1')
+
+    const canaries = ['security findings by October 20', 'Rollout stays phased', 'Send the security findings']
+    const assertErased = (when) => {
+      for (const name of readdirSync(directory).filter((file) => file.startsWith('meeting-ledger.sqlite'))) {
+        const raw = readFileSync(join(directory, name)).toString('latin1')
+        for (const canary of canaries) assert.equal(raw.includes(canary), false, `${when}: ${name} still contains deleted text "${canary}"`)
+      }
+    }
+    assertErased('while the server is still running')
+    durable.close()
+    assertErased('after shutdown')
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
 test('a database from an unsupported data model version is refused', () => {
   const directory = tempDirectory()
   try {

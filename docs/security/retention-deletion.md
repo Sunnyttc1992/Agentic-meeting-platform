@@ -42,6 +42,27 @@ A deletion is complete only when all registered processors acknowledge deletion 
 
 The in-memory speech pipeline re-checks current consent, policy version, classification/fingerprint, retention state, and organizer authorization both before processing and before publication. Any denial moves queued or processing work to `quarantined`, removes transcript/assertion candidates, and prevents status, search, and AI retrieval from returning derived content. Uploaded bytes remain only for active quarantine or legal-hold disposition; `pending-deletion`, `deletion-in-progress`, and `deleted` clear local bytes immediately.
 
+## Deletion inventory (PRIV-05, current prototype, 2026-10-06)
+
+Manual deletion and retention expiry both run `#disposeMeetingContent`. Every store this app writes is listed here; a store that is not listed does not exist in the prototype. "Outside the app" rows are what a deletion cannot reach and need an operator or contractual control.
+
+| Store | What it holds | On deletion | Evidence |
+| --- | --- | --- | --- |
+| Recording audio (SQLite or PostgreSQL `recording_content`) | AES-256-GCM ciphertext | Row deleted; recording marked `deleted` with `contentClearedAt` | `server/retention.test.js`, `server/durable-storage.test.js` |
+| Transcript segments and knowledge assertions | Transcript text, summary, decisions, risks, questions, actions | Rows deleted | same |
+| Commitment registry | Derived action rows | Rows deleted | same |
+| SQLite file and write-ahead log (local mode) | Free pages and WAL frames that held deleted rows | `secure_delete` zeroes freed rows; the WAL is checkpointed and truncated after each delete commit | "deleted meeting content is not left readable in the SQLite database or its write-ahead log" |
+| Meeting record | Policy state, consent evidence, capture-stop boundaries | Kept as the deletion tombstone (`retentionState: deleted`); content-free | blocks later preflight, upload, processing, and retries |
+| Audit log and outbox | Content-free events | Kept (append-only by design) | audit tests |
+| Diarization temporary directory | Plaintext WAV and turn JSON for one job | Removed in `finally` after every job | `server/diarization.test.js` |
+| Browser memory | In-progress capture | Discarded on stop, discard, policy stop, or sensitive-topic stop | studio tests |
+| **Outside the app:** PostgreSQL dead tuples | Deleted rows until `VACUUM` | Audio is ciphertext, but under one shared key. Production should add per-recording data keys (crypto-shredding) or a scheduled `VACUUM` with a documented window | not yet implemented |
+| **Outside the app:** PostgreSQL backups | Point-in-time copies | Expire with the backup rotation; a restore must run deletion reconciliation before serving (see `docs/architecture/windows-postgres-operations.md`) | operator procedure |
+| **Outside the app:** downloaded exports | Markdown files a participant saved | Cannot be recalled; the export is marked confidential and audited | `meeting.export` audit |
+| **Outside the app:** summary provider | Transcript sent for summarization | OpenAI: `store: false` (no stored-response retrieval); provider abuse-monitoring retention per contract. Anthropic: default API retention per contract. Both need the approval packets before real meetings | approval packets |
+
+There are no embeddings, vector stores, search indexes, caches, queues/dead letters, graph stores, or agent memory in the prototype. Adding any of them must add a row here and a deletion path before it ships.
+
 ## Retention expiry (PRIV-04, milestone implementation)
 
 - **Rules.** `PolicyEngine({ retentionPolicies })` takes rules of the form `{ tenantId, classification, retainDays }`.
