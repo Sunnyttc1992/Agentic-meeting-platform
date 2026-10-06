@@ -168,6 +168,54 @@ test('platform accepts a validated storage bundle without changing its public be
   assert.equal(storage.scope({ tenantId: 'southstar' }).meetings.get('meeting-storage-contract'), null)
 })
 
+test('an audit sink failure rolls back an allowed state transition before it becomes visible', async () => {
+  const storage = createInMemoryMeetingStorage({ shouldFailAuditAppend: () => true })
+  const platform = new MeetingIntelligencePlatform({ storage, policy: new PolicyEngine() })
+  const organizer = { tenantId: 'northstar', userId: 'alex' }
+  await assert.rejects(async () => (await platform.createMeeting(organizer, {
+    id: 'audit-required', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex'], classification: 'standard',
+  }, 'audit-sink-down')), /Injected audit append failure/)
+
+  const scope = storage.scope({ tenantId: 'northstar' })
+  assert.equal(scope.meetings.get('audit-required'), null)
+  assert.deepEqual(scope.audit.chain(), [])
+})
+
+test('an audit outage cannot queue processing for a rolled-back recording transition', async () => {
+  let failProcessingAudit = false
+  const storage = createInMemoryMeetingStorage({
+    shouldFailAuditAppend: (event) => failProcessingAudit && event.action === 'recording.process' && event.outcome === 'allowed',
+  })
+  const jobs = []
+  const platform = new MeetingIntelligencePlatform({
+    storage, policy: new PolicyEngine(), clock: new FixedClock('2026-10-03T12:00:00Z'), schedule: (job) => jobs.push(job),
+  })
+  const alex = { tenantId: 'northstar', userId: 'alex' }
+  const sam = { tenantId: 'northstar', userId: 'sam' }
+  const bytes = Buffer.from('audit queue rollback fixture')
+  await platform.createMeeting(alex, {
+    id: 'audit-queue', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex', 'sam'], classification: 'standard',
+  })
+  for (const actor of [alex, sam]) {
+    await platform.recordConsent(actor, 'audit-queue', {
+      participantId: actor.userId, decision: 'granted', policyVersion: 'v1',
+      capturedAt: '2026-10-03T11:00:00Z', expiresAt: '2026-10-04T11:00:00Z',
+    })
+  }
+  const lease = await platform.authorizeRecording(alex, 'audit-queue')
+  const created = await platform.createRecording(alex, 'audit-queue', {
+    leaseId: lease.leaseId, contentType: 'audio/webm', byteLength: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'),
+  })
+  await platform.uploadRecording(alex, 'audit-queue', created.recordingId, {
+    contentType: 'audio/webm', contentLength: bytes.length, bytes,
+  })
+
+  failProcessingAudit = true
+  await assert.rejects(async () => (await platform.startProcessing(alex, 'audit-queue', created.recordingId, 'audit-queue-down')), /Injected audit append failure/)
+  assert.equal(jobs.length, 0)
+  assert.equal(storage.scope({ tenantId: 'northstar' }).recordings.get(created.recordingId).state, 'uploaded')
+})
+
 test('storage-backed platform emits tenant-scoped canonical lifecycle events without leaking content or processor metadata', async () => {
   const storage = createInMemoryMeetingStorage()
   const jobs = []

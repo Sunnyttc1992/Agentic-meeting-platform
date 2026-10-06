@@ -159,7 +159,7 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 | SEC-05 | done | Database rejects audit edits (SQLite, PostgreSQL) | External audit sink |
 | SEC-06 | done | none | Watermarking, link expiry |
 | SEC-07 | done | none | none at M |
-| SEC-08 | partial | none | KMS/audit-sink outage tests |
+| SEC-08 | partial | Allowed request transitions roll back when the audit append fails | KMS outage tests; background audit-sink resilience |
 | AI-01 | done | none | none at M |
 | AI-02 | done | none | none at M |
 | AI-03 | done | none | Model/pipeline version on every claim |

@@ -538,8 +538,8 @@ export class MeetingIntelligencePlatform {
     }
   }
 
-  async #audit({ correlationId, principal: actor, action, meetingId = null, recordingId = null, outcome, reason = null }) {
-    await this.audit.append({
+  async #audit({ correlationId, principal: actor, action, meetingId = null, recordingId = null, outcome, reason = null }, transaction = null) {
+    await (transaction?.audit ?? this.audit).append({
       id: randomUUID(), correlationId, tenantId: actor.tenantId, principalId: actor.userId,
       actorId: actor.userId, resourceType: recordingId ? 'recording' : 'meeting',
       resourceId: recordingId ?? meetingId, meetingId, recordingId, action, outcome, reason,
@@ -547,11 +547,18 @@ export class MeetingIntelligencePlatform {
     })
   }
 
-  async #audited(actor, correlationId, action, meetingId, operation, recordingId = null) {
+  async #audited(actor, correlationId, action, meetingId, operation, recordingId = null, allowedReason = null) {
     try {
-      const result = (await operation())
-      await this.#audit({ correlationId, principal: actor, action, meetingId, recordingId, outcome: 'allowed' })
-      return result
+      const execute = async (transaction = null) => {
+        const result = (await operation())
+        // A durable storage bundle supplies one tenant-bound transaction here.
+        // The audit append is deliberately in that transaction, so an audit
+        // outage rolls back the protected state transition instead of leaving
+        // an allowed action without its required evidence.
+        await this.#audit({ correlationId, principal: actor, action, meetingId, recordingId, outcome: 'allowed', reason: allowedReason }, transaction)
+        return result
+      }
+      return this.#tenantTransaction ? (await this.#tenantTransaction(actor.tenantId, execute)) : (await execute())
     } catch (error) {
       await this.#audit({ correlationId, principal: actor, action, meetingId, recordingId, outcome: 'denied', reason: error?.auditReason ?? error?.code ?? 'UNEXPECTED_ERROR' })
       throw error
@@ -1034,8 +1041,7 @@ export class MeetingIntelligencePlatform {
   async stopCapture(input, meetingId, body, correlationId = randomUUID()) {
     const actor = principal(input)
     const reason = CAPTURE_STOP_REASONS.get(body?.reason)
-    let result
-    try {
+    return (await this.#audited(actor, correlationId, 'recording.stop', meetingId, async () => {
       const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       invariant(meetingRecord.participantIds.includes(actor.userId) || meetingRecord.organizerId === actor.userId, 'MEETING_NOT_FOUND', 'Meeting not found', 404)
       invariant(reason, 'INVALID_STOP_REASON', 'Stop reason must be sensitive-topic or participant-request', 400)
@@ -1047,13 +1053,8 @@ export class MeetingIntelligencePlatform {
           if (record.leaseId === leaseId && (await this.#quarantineStoppedRecording(meetingRecord, record, reason))) quarantinedRecordings += 1
         }
       }
-      result = { stoppedAt: meetingRecord.captureStops.at(-1).at, reason: body.reason, authorizationRevoked, quarantinedRecordings }
-    } catch (error) {
-      await this.#audit({ correlationId, principal: actor, action: 'recording.stop', meetingId, outcome: 'denied', reason: error?.code ?? 'UNEXPECTED_ERROR' })
-      throw error
-    }
-    await this.#audit({ correlationId, principal: actor, action: 'recording.stop', meetingId, outcome: 'allowed', reason })
-    return result
+      return { stoppedAt: meetingRecord.captureStops.at(-1).at, reason: body.reason, authorizationRevoked, quarantinedRecordings }
+    }, null, reason))
   }
 
   async authorizeRecording(input, meetingId, correlationId = randomUUID()) {
@@ -1139,7 +1140,8 @@ export class MeetingIntelligencePlatform {
 
   async startProcessing(input, meetingId, recordingId, correlationId = randomUUID()) {
     const actor = principal(input)
-    return (await this.#audited(actor, correlationId, 'recording.process', meetingId, async () => {
+    let queuedRecordingId = null
+    const result = (await this.#audited(actor, correlationId, 'recording.process', meetingId, async () => {
       const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       const recording = (await this.#recording(actor, meetingId, recordingId, true))
       const decision = this.#recordingPolicyDecision(actor, meetingRecord, recording)
@@ -1151,9 +1153,15 @@ export class MeetingIntelligencePlatform {
       invariant(recording.state === 'uploaded', 'RECORDING_NOT_UPLOADED', 'Recording must be uploaded before processing', 409)
       recording.state = 'queued'; recording.progress = 35; recording.processingAttempts = 1
       await this.recordings.save(recording)
-      this.schedule(async () => (await this.#process(actor.tenantId, recording.id, correlationId)))
+      queuedRecordingId = recording.id
       return view(recording)
     }, recordingId))
+    // Queue only after both the state transition and its required allowed
+    // audit event commit. This avoids leaking a completed transaction context
+    // into asynchronous work and prevents an audit outage from launching a
+    // job for rolled-back state.
+    if (queuedRecordingId) this.schedule(async () => (await this.#process(actor.tenantId, queuedRecordingId, correlationId)))
+    return result
   }
 
   // Re-queues a failed job for its organizer, a bounded number of times. Policy
@@ -1162,7 +1170,8 @@ export class MeetingIntelligencePlatform {
   // instead of being processed again.
   async retryProcessing(input, meetingId, recordingId, correlationId = randomUUID()) {
     const actor = principal(input)
-    return (await this.#audited(actor, correlationId, 'recording.process.retry', meetingId, async () => {
+    let queuedRecordingId = null
+    const result = (await this.#audited(actor, correlationId, 'recording.process.retry', meetingId, async () => {
       const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       const recording = (await this.#recording(actor, meetingId, recordingId, true))
       invariant(recording.state === 'failed' && recording.error === PROCESSOR_FAILED, 'RECORDING_NOT_RETRYABLE', 'Only a failed processing job can be retried', 409)
@@ -1176,9 +1185,11 @@ export class MeetingIntelligencePlatform {
       recording.state = 'queued'; recording.progress = 35; recording.error = null
       recording.processingAttempts = (recording.processingAttempts ?? 1) + 1
       await this.recordings.save(recording)
-      this.schedule(async () => (await this.#process(actor.tenantId, recording.id, correlationId)))
+      queuedRecordingId = recording.id
       return view(recording)
     }, recordingId))
+    if (queuedRecordingId) this.schedule(async () => (await this.#process(actor.tenantId, queuedRecordingId, correlationId)))
+    return result
   }
 
   async #process(tenantId, recordingId, correlationId) {

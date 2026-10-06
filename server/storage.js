@@ -320,7 +320,7 @@ export class InMemoryOutboxRepository {
 // checks run on the actual record, never on a pending promise.
 const settle = (value, next) => (value && typeof value.then === 'function' ? value.then(next) : next(value))
 
-function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxEnqueue = null } = {}) {
+function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxEnqueue = null, beforeAuditAppend = null } = {}) {
   const normalized = tenantScope(scope)
   const { tenantId } = normalized
   // Recording methods are keyed by ID; the tenant is passed as well, so a
@@ -378,6 +378,10 @@ function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxE
     recordings.clearContent = (recordingId) => withRecording(recordingId, () => repositories.recordings.clearContent(recordingId, tenantId))
     audit.append = (event) => {
       assertTenantRecord(normalized, event, 'audit event')
+      // The injector exists solely to exercise the fail-closed audit boundary.
+      // It runs before the insert, so the composition root's transaction rolls
+      // back the protected state transition along with its missing audit event.
+      if (beforeAuditAppend?.(structuredClone(event))) throw new Error('Injected audit append failure')
       return repositories.audit.append(event)
     }
     commitments.replaceMeeting = (meetingId, knowledgeForMeeting) => {
@@ -416,9 +420,9 @@ function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxE
 // bundle. `runAtomically(work)` runs `work` (which may be asynchronous) and
 // either keeps everything it wrote or rolls all of it back; use
 // `createSerializedTransactionRunner` so transactions cannot interleave.
-export function composeRepositoryStorage({ kind, repositories, runAtomically, beforeOutboxEnqueue = null }) {
+export function composeRepositoryStorage({ kind, repositories, runAtomically, beforeOutboxEnqueue = null, beforeAuditAppend = null }) {
   invariant(typeof runAtomically === 'function', 'INVALID_STORAGE_ADAPTER', 'Storage backends must provide an atomic transaction runner')
-  const scopedFacade = (scope, options = {}) => tenantFacadeOver(repositories, scope, { ...options, beforeOutboxEnqueue })
+  const scopedFacade = (scope, options = {}) => tenantFacadeOver(repositories, scope, { ...options, beforeOutboxEnqueue, beforeAuditAppend })
   return createMeetingStorageBundle({
     kind,
     scope: (scope) => scopedFacade(scope),
@@ -433,9 +437,11 @@ export function composeRepositoryStorage({ kind, repositories, runAtomically, be
 // while allowing an application to pass one durable adapter bundle into the
 // platform. `transaction` intentionally receives an explicit scope, making an
 // unscoped cross-tenant query impossible at the storage boundary.
-export function createInMemoryMeetingStorage({ shouldFailOutboxEnqueue = null } = {}) {
+export function createInMemoryMeetingStorage({ shouldFailOutboxEnqueue = null, shouldFailAuditAppend = null } = {}) {
   invariant(shouldFailOutboxEnqueue === null || typeof shouldFailOutboxEnqueue === 'function',
     'INVALID_STORAGE_ADAPTER', 'Outbox failure injector must be a function when supplied')
+  invariant(shouldFailAuditAppend === null || typeof shouldFailAuditAppend === 'function',
+    'INVALID_STORAGE_ADAPTER', 'Audit failure injector must be a function when supplied')
   // Repositories remain private to this composition root. In particular, a
   // transaction callback never receives this object or any repository with a
   // caller-supplied tenant argument. Its only authority is a new, tenant-bound
@@ -452,6 +458,7 @@ export function createInMemoryMeetingStorage({ shouldFailOutboxEnqueue = null } 
     kind: 'in-memory-prototype',
     repositories,
     beforeOutboxEnqueue: shouldFailOutboxEnqueue,
+    beforeAuditAppend: shouldFailAuditAppend,
     // Snapshot before the write facade is minted. This is the prototype of the
     // all-or-nothing contract: if an outbox enqueue or a derived commitment
     // write fails, canonical and outbox rows are restored together. Durable
