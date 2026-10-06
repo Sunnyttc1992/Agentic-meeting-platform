@@ -56,6 +56,7 @@ async function exposure(platform, actor, recordingId) {
   const settle = async (work) => { try { return { ok: true, value: await work() } } catch (error) { return { ok: false, code: error.code } } }
   const knowledge = await settle(() => platform.getMeetingKnowledge(actor, 'meeting-a'))
   const recording = await settle(() => platform.getRecording(actor, 'meeting-a', recordingId))
+  const recordingList = await settle(() => platform.listRecordings(actor, 'meeting-a'))
   const exported = await settle(() => platform.exportMeetingRecord(actor, 'meeting-a'))
   const privacy = await settle(() => platform.getMeetingPrivacyAccess(actor, 'meeting-a'))
   const search = await platform.searchKnowledge(actor, QUERY)
@@ -65,19 +66,19 @@ async function exposure(platform, actor, recordingId) {
   const listed = await platform.listMeetings(actor)
   const mentions = (value) => JSON.stringify(value).includes('meeting-a')
   return {
-    knowledge: knowledge.ok, recording: recording.ok, export: exported.ok, privacy: privacy.ok,
+    knowledge: knowledge.ok, recording: recording.ok, recordingList: recordingList.ok, export: exported.ok, privacy: privacy.ok,
     search: mentions(search), retrieval: retrieved.sources.some((source) => source.meetingId === 'meeting-a'),
     commitments: commitments.commitments.some((item) => item.meetingId === 'meeting-a'),
     briefing: mentions(briefing), list: listed.some((item) => item.id === 'meeting-a'),
   }
 }
 
-const NOTHING = { knowledge: false, recording: false, export: false, privacy: false, search: false, retrieval: false, commitments: false, briefing: false, list: false }
+const NOTHING = { knowledge: false, recording: false, recordingList: false, export: false, privacy: false, search: false, retrieval: false, commitments: false, briefing: false, list: false }
 
 test('a management grant that expires is denied on the very next read of every surface', async () => {
   const { platform, clock, recordingIds } = await setup()
   const before = await exposure(platform, ceo, recordingIds['meeting-a'])
-  assert.deepEqual(before, { ...NOTHING, knowledge: true, recording: true, privacy: true, search: true, retrieval: true, commitments: true, briefing: true }, 'a grant reads but never exports or lists')
+  assert.deepEqual(before, { ...NOTHING, knowledge: true, recording: true, recordingList: true, privacy: true, search: true, retrieval: true, commitments: true, briefing: true }, 'a grant reads but never exports or lists')
   clock.advance(6 * 60 * 60 * 1000)
   assert.deepEqual(await exposure(platform, ceo, recordingIds['meeting-a']), NOTHING)
 })

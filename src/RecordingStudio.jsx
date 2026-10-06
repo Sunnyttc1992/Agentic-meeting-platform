@@ -124,6 +124,25 @@ const actionOwner = (commitment, participants) => commitment?.ownerId
 const AGREEMENT_LABELS = { committed: "Committed", proposed: "Proposed" }
 const dueDate = (iso) => iso ? new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }) : "Not stated"
 
+const RECORDING_STATE_LABELS = { created: "Not uploaded", uploaded: "Uploaded", queued: "Queued", processing: "Processing", completed: "Complete", failed: "Failed", quarantined: "Discarded by policy", deleted: "Deleted" }
+const recordedAt = (iso) => iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Not uploaded"
+
+// A meeting can hold several recordings (each capture needs a fresh policy
+// check). The rail lists them by status only; results are fetched per
+// recording when one is opened, through the same authorized route.
+export function MeetingRecordingsList({ recordings, currentRecordingId = null, viewingId = null, onOpen }) {
+  if (recordings.length === 0) return null
+  return <section className="meeting-recordings" aria-label="Recordings in this meeting">
+    <p className="eyebrow">RECORDINGS IN THIS MEETING</p>
+    <ol>{recordings.map((item, index) => <li key={item.id} className={viewingId === item.id ? "is-viewing" : undefined}>
+      <div><b>Recording {index + 1}</b><small>{recordedAt(item.uploadedAt)} · {RECORDING_STATE_LABELS[item.state] ?? "Unknown"}</small></div>
+      {item.id === currentRecordingId
+        ? <span className="current-tag">This session</span>
+        : item.state === "completed" && <button onClick={() => onOpen(item, index)} aria-pressed={viewingId === item.id}>{viewingId === item.id ? "Showing" : "View"}</button>}
+    </li>)}</ol>
+  </section>
+}
+
 // Every generated item shows the transcript moments it cites. Items the
 // platform could not tie to this transcript were withheld before storage.
 export function MeetingIntelligenceResult({ result, onDownload = null, participants = DEFAULT_PARTICIPANTS }) {
@@ -192,6 +211,9 @@ export function RecordingStudio({ onBack, meeting = { id: DEFAULT_MEETING_ID, ti
   const [audioUrl, setAudioUrl] = useState(null)
   const [syntheticFixture, setSyntheticFixture] = useState(false)
   const [processingResult, setProcessingResult] = useState(null)
+  const [meetingRecordings, setMeetingRecordings] = useState([])
+  const [earlier, setEarlier] = useState(null)
+  const earlierRef = useRef(null)
   const mockMode = browserMockEnabled()
   // `STOP` changes the reducer phase before MediaRecorder's `onstop` callback
   // marks the fixture complete. Keep the mock posture truthfully synthetic in
@@ -437,6 +459,27 @@ export function RecordingStudio({ onBack, meeting = { id: DEFAULT_MEETING_ID, ti
     } catch(error){ dispatch({type:["RECORDING_LEASE_EXPIRED","CONSENT_NOT_GRANTED","RETENTION_RESTRICTED"].includes(error.code)?"POLICY_STOP":"ERROR",reason:error.message,error:error.message}) }
   }
 
+  // Load the list when the studio opens and again whenever a capture settles.
+  const settledPhase = ["completed", "failed", "discarded", "blocked", "policy-stopped", "error"].includes(state.phase) ? state.phase : null
+  useEffect(() => {
+    let active = true
+    fetch(`/meetings/${meetingId}/recordings`, { headers: authHeaders() })
+      .then(async (response) => { if (active && response.ok) setMeetingRecordings((await response.json()).recordings ?? []) })
+      .catch(() => {})
+    return () => { active = false }
+  }, [meetingId, settledPhase])
+  useEffect(() => { if (earlier) earlierRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }) }, [earlier?.id])
+  const openEarlier = async (item, index) => {
+    try {
+      const response = await fetch(`/meetings/${meetingId}/recordings/${item.id}`, { headers: authHeaders() })
+      const body = await response.json()
+      if (!response.ok) throw new Error(body?.error?.message ?? "The recording could not be opened.")
+      setEarlier({ id: item.id, index, result: body })
+    } catch (error) {
+      setEarlier({ id: item.id, index, error: error.message })
+    }
+  }
+
   const awaitingConsent = state.phase === "awaiting-consent" || state.phase === "preflighting"
   return <main className="capture-shell">
     <header className="capture-nav">
@@ -480,8 +523,13 @@ export function RecordingStudio({ onBack, meeting = { id: DEFAULT_MEETING_ID, ti
         <dl><div><dt>Meeting policy</dt><dd><ShieldCheck /> Preflight enforced</dd></div><div><dt>{mockMode ? "Capture source" : "Microphone"}</dt><dd><Microphone aria-hidden="true" /> {mockMode ? "Synthetic fixture · no microphone/audio" : streamRef.current ? "Connected" : "Not active"}</dd></div><div><dt>Authorization lease</dt><dd>{state.authorizationExpiresAt ? `${displayTime(remaining)} remaining` : "Not issued"}</dd></div><div><dt>Storage</dt><dd>{mockMode ? "No audio retained" : "In-memory only"}</dd></div></dl>
         {state.phase === "recording" && <div className="withdraw-box sensitive-box"><b>Topic turned sensitive?</b><p>Stop now. The audio captured so far is discarded, the stop time is recorded, and capture can resume only after a new policy check.</p><button onClick={sensitiveStop}>Stop and discard: sensitive topic</button></div>}
         {state.phase === "recording" && <div className="withdraw-box"><b>Consent changed?</b><p>Any participant can withdraw. Capture stops immediately and audio is cleared.</p>{participants.map((person) => <button key={person.id} onClick={() => setConsent(person.id, "withdrawn")}>Withdraw for {person.name}</button>)}</div>}
+        <MeetingRecordingsList recordings={meetingRecordings} currentRecordingId={state.recordingId} viewingId={earlier?.id ?? null} onOpen={openEarlier} />
         <small>{state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "Audio is transcribed on this machine by Whisper and never leaves it. When configured, only the transcript text and anonymous speaker labels are sent to the configured AI provider (OpenAI or Claude) to write the cited summary and action plan." : "Local deterministic processor is a clearly labeled fake. It demonstrates provenance, identity confidence, and citations; it does not claim real STT or diarization."}</small>
       </aside>
     </section>
+    {earlier && <section className="earlier-recording" ref={earlierRef} aria-label={`Recording ${earlier.index + 1} results`}>
+      <header><p className="stage-index">EARLIER RECORDING · {earlier.index + 1} OF {meetingRecordings.length}</p><button className="earlier-close" onClick={() => setEarlier(null)}>Close</button></header>
+      {earlier.error ? <p className="intelligence-note">{earlier.error}</p> : <MeetingIntelligenceResult result={earlier.result} participants={participants} />}
+    </section>}
   </main>
 }

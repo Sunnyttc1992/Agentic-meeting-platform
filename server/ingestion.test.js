@@ -631,6 +631,10 @@ test('a later recording in the same meeting never replaces or relabels an earlie
 
   failNext = true
   const failed = await processed()
+  const listed = await setupResult.platform.listRecordings(sam, 'meeting-1')
+  assert.deepEqual(listed.recordings.map((item) => [item.id, item.state]), [[first, 'completed'], [second, 'completed'], [failed, 'failed']], 'every recording is listed, oldest first')
+  assert.deepEqual(Object.keys(listed.recordings[0]).sort(), ['id', 'processor', 'state', 'uploadedAt', 'withheldAssertions'], 'the list carries status only, never content')
+  await assert.rejects(setupResult.platform.listRecordings({ tenantId: 'northstar', userId: 'outsider' }, 'meeting-1'), { code: 'MEETING_FORBIDDEN' })
   assert.equal((await setupResult.platform.getRecording(sam, 'meeting-1', failed)).recording.state, 'failed')
   assert.deepEqual((await setupResult.platform.getRecording(sam, 'meeting-1', first)).assertions, firstBefore.assertions, 'a failed recording leaves earlier knowledge intact')
   assert.equal((await setupResult.platform.getMeetingKnowledge(sam, 'meeting-1')).segments.length, meetingKnowledge.segments.length)

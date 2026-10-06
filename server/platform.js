@@ -82,7 +82,7 @@ const SAFE_AUDIT_REASONS = new Set([
 const SAFE_AUDIT_ACTIONS = new Set([
   'meeting.create', 'meeting.list', 'consent.record', 'recording.preflight', 'recording.create', 'recording.upload',
   'recording.process', 'recording.process.retry', 'recording.process.complete', 'recording.status', 'recording.delete',
-  'recording.authorization.status',
+  'recording.authorization.status', 'recording.list',
   'transcript.append', 'knowledge.assertions.add', 'knowledge.read', 'knowledge.search',
   'ai.retrieve', 'privacy-access.read', 'meeting.export', 'retention.expire',
   'commitment.query',
@@ -1362,6 +1362,24 @@ export class MeetingIntelligencePlatform {
     } catch {
       await this.#processorFailure(recordingId, correlationId, actor)
     }
+  }
+
+  // Status-only list of a meeting's recordings, oldest first, for anyone who
+  // may read the meeting. It carries no transcript, assertion, or audio data;
+  // each recording's results are read separately through getRecording.
+  async listRecordings(input, meetingId, correlationId = randomUUID()) {
+    const actor = principal(input)
+    return (await this.#audited(actor, correlationId, 'recording.list', meetingId, async () => {
+      const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
+      this.policy.require(this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() }))
+      const records = (await this.recordings?.listForMeeting(actor.tenantId, meetingId)) ?? []
+      return Object.freeze({
+        recordings: Object.freeze(records.map((record) => Object.freeze({
+          id: record.id, state: record.state, processor: record.processor ?? null,
+          uploadedAt: record.uploadedAt ?? null, withheldAssertions: record.withheldAssertions ?? 0,
+        }))),
+      })
+    }))
   }
 
   async getRecording(input, meetingId, recordingId, correlationId = randomUUID()) {
