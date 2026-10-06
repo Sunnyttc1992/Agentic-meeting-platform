@@ -26,12 +26,17 @@ Open **Test secure recording**, grant consent for both participants, record, sto
 
 | Setting | Default | Purpose |
 |---|---|---|
+| `MEETING_SUMMARY_PROVIDER` | unset | `openai`, `anthropic`, or `none`. Unset: Anthropic when its key is present, then OpenAI. A chosen provider without a key gives transcript-only, never the other provider |
+| `OPENAI_API_KEY` | unset | Enables the OpenAI summary and action plan (Responses API, `store: false`) |
+| `OPENAI_SUMMARY_MODEL` | `gpt-5.5` | OpenAI model used for the summary |
 | `ANTHROPIC_API_KEY` (or an `ant auth login` profile) | unset | Enables the Claude summary and action plan |
+| `ANTHROPIC_WORKSPACE_ID` | unset | Needed only for an organization-level Anthropic key that is not scoped to a workspace (not a secret) |
 | `MEETING_SUMMARY_MODEL` | `claude-sonnet-5-5` | Claude model used for the summary |
 | `WHISPER_MODEL` | `onnx-community/whisper-base` | Local Whisper model; `onnx-community/whisper-small` is more accurate but slower |
 | `WHISPER_LANGUAGE` | `en` | Spoken language |
 | `MEETING_PROCESSOR` | `local` | Set to `fake` for the deterministic development processor |
 | `DIARIZATION_PYTHON` + `DIARIZATION_MODEL_DIR` | unset | Enables the local, offline pyannote Community-1 worker |
+| `MEETING_DIARIZATION_TEMP_DIR` | system temp | Protected directory for the worker's per-job plaintext files (removed after each job) |
 
 Meetings, consent, transcripts, action plans, and the audit trail are saved in `.data/meeting-ledger.sqlite`, so they survive a restart. Recording audio is stored encrypted (AES-256-GCM) with a key generated on first run at `.data/keys/recording-audio-v1.key`.
 
@@ -46,9 +51,13 @@ Meetings, consent, transcripts, action plans, and the audit trail are saved in `
 
 Recordings up to about 80 minutes are accepted. Data flow, controls, and the remaining blockers to wider delivery are documented in [docs/security/local-meeting-pipeline.md](../docs/security/local-meeting-pipeline.md).
 
+### Evaluate the summary prompt
+
+`npm run eval:summaries` sends seven short, invented transcripts (`evals/meeting-intelligence-cases.mjs`) to the configured provider and scores each prompt rule: committed vs proposed actions, named owners, relative and vague dates, prompt injection, small talk, duplicates, and unattributed speech. It costs real API credit and is never part of `npm test`; the scorer itself is unit-tested. `gpt-5.5` scored 20/20 on 2026-10-06. Run it after any change to `SYSTEM_PROMPT`, `OUTPUT_SCHEMA`, or the model.
+
 ### Check pipeline readiness without processing a meeting
 
-With the local preview running, use the browser's existing local development identity or call the same-origin `GET /pipeline/readiness` route. It reports only whether the Whisper runtime is installed, a complete local model cache is present, Anthropic credentials are configured, and Teams remains disconnected. It does not download Whisper, send audio, contact Anthropic, or reveal paths, model names, IDs, or credential values. A missing `.env` or empty key honestly reports `anthropic.credentialsConfigured: false`; process a short non-sensitive test recording from `http://localhost:4173` to exercise transcript-only mode first.
+With the local preview running, use the browser's existing local development identity or call the same-origin `GET /pipeline/readiness` route. It reports only whether the Whisper runtime is installed, a complete local model cache is present, the diarization runtime and model files are present, which summary provider is active, whether Anthropic or OpenAI credentials are configured, and that Teams remains disconnected. It does not download Whisper, send audio, contact Anthropic, or reveal paths, model names, IDs, or credential values. A missing `.env` or empty key honestly reports `anthropic.credentialsConfigured: false`; process a short non-sensitive test recording from `http://localhost:4173` to exercise transcript-only mode first.
 
 ## Local audio ingestion
 
