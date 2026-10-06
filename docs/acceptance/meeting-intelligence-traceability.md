@@ -138,10 +138,10 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 | CAP-10 | partial | Each recording in a meeting keeps its own transcript, decisions, and actions; a later recording or a processor failure cannot replace them (in-memory, SQLite, PostgreSQL tests) | Rescinded decisions and recomputation versioning |
 | AUTH-01 | done | Tenant RLS in PostgreSQL | Per-participant grants in the database |
 | AUTH-02 | done | none | IdP/HR hierarchy source |
-| AUTH-03 | partial | none | Revocation SLA for cached/derived paths |
+| AUTH-03 | done | Revocation SLA is zero: no read path caches a decision. `server/revocation.test.js` revokes by grant expiry, grant withdrawal, hierarchy change, and participant removal, then sweeps knowledge, recording status, export, privacy, search, retrieval, commitments, briefing, list, and capture status; mid-retrieval revocation applies to every later source | Measured SLA once an IdP/HR source adds propagation delay |
 | AUTH-04 | done | PostgreSQL RLS tenant isolation | Object store, when added |
 | AUTH-05 | done | Sealed tenant facades; RLS | Static checks |
-| AUTH-06 | partial | none | Redaction and topic-level restriction |
+| AUTH-06 | partial | Cross-meeting recording IDs look nonexistent; citations never point into an unreadable meeting; regeneration is organizer-only (`server/revocation.test.js`) | Redaction and topic-level restriction (needs a product decision) |
 | AUTH-07 | partial | Tenant-isolated, authorization-filtered bounded lexical retrieval | No vector index; deletion/backup lifecycle for future embeddings |
 | AUTH-08 | done | none | none at M |
 | AUTH-09 | partial | Least-privilege DB role | Workload identities |
