@@ -5,7 +5,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 ## Project and checkpoint
 
 - Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
-- Latest functional code checkpoint: the commit `Keep each recording's knowledge when a meeting is recorded again` (after `28774ea Expose safe local request diagnostics`) (feature delivery began at `5390d5a`). The commit that updates this handoff follows it.
+- Latest functional code checkpoint: `5ea85a0 Show every recording of a meeting in the studio` (Claude session of 2026-10-06 began after `474d72d`; feature delivery began at `5390d5a`). The commit that updates this handoff follows it.
 - The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
 - Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
@@ -44,10 +44,28 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 19. `npm run smoke:browser` starts a temporary SQLite-backed loopback preview **without loading `.env`**, drives headless Chrome through the real workspace's create-meeting, consent, preflight, microphone capture, stop, and local-review sequence, then terminates the server and deletes the temporary data. It asserts the local review player is present. `npm run smoke:browser -- -ProcessRecording` additionally confirms the synthetic audio, then asserts completed local Whisper processing with a non-empty transcript. Neither mode may point at an existing server holding real meetings.
 20. The local workspace creates a correlation ID per request. A failure now reports only a safe transport/status message and that reference, so a local operator can identify a request without exposing credentials or meeting content.
 21. A meeting can hold several recordings (a stopped capture needs a fresh preflight). Completing or failing one recording now replaces only that recording's segments and the assertions citing them; other recordings' knowledge is rewritten unchanged in the same tenant transaction, and commitments are re-derived from the whole meeting. Previously a second recording silently erased the first recording's transcript, decisions, and actions, and `GET /meetings/:id/recordings/:rid` returned the meeting-wide knowledge under the wrong recording. It now returns only that recording's segments and the assertions whose citations all reference them. Policy-revocation quarantine still clears the whole meeting on purpose.
+22. **Per-recording audio keys (crypto-shredding).** New audio is key version 2: encrypted under its own random key, wrapped by the master key, and stored as one hashed-name file outside the database (`.data/keys/recordings/` for SQLite; `MEETING_RECORDING_KEY_DIR`, default `.data/recording-keys`, for PostgreSQL). Deleting content destroys the key, so dead tuples and restored backup rows cannot be decrypted. Version 1 audio stays readable. `server/adapters/recording-keys.js`, `server/recording-keys.test.js`.
+23. **Revocation sweep** (`server/revocation.test.js`): grant expiry, withdrawal, hierarchy change, and participant removal deny every read surface on the next call. No defect found; AUTH-03 is now done at M.
+24. **Whisper silence phrases** are also dropped over intermittent clicks (Chrome's fake microphone: a ~40 ms beep every 500 ms). The processing smoke now expects "No speech was recognized" for that audio; before, it was asserting the hallucination.
+25. **Speaker labels:** `npm run benchmark:diarization` (synthetic TTS crosstalk, interjections, silences, rapid exchange). Fewer than two diarization labels now leaves every segment `UNATTRIBUTED`, because pyannote merged two voices in a rapid exchange. Result: 0/26 segments credited to the wrong voice.
+26. **Summary evaluation** grew to 16 cases (44 checks). Two prompt clarifications (accepted request to a named participant sets the owner; withdrawn tasks and "do not" actions are not actions) took gpt-5.5 from 43/45 to 44/44.
+27. **Real-audio benchmark:** `npm run benchmark:real-audio -- --audio <wav>` scores a reading of `evals/real-audio-script.txt` locally. It found and fixed Whisper repeating neighbouring sentences in a squeezed segment at its 30 s window boundary (WER 15.6% to 2.2% on a TTS reading).
+28. **Prototype ZIP** now uses forward-slash entry names; a simulated clean install passed (see `docs/operations/local-prototype-distribution.md`).
+29. **Studio lists every recording of a meeting** (status-only `GET /meetings/:id/recordings`) and opens an earlier recording's results in a panel below the capture area.
+
+### Decisions Claude made while the user was offline (2026-10-06), for review
+
+- Per-recording keys live in a server-writable folder outside the DB dump, not beside the read-only master key; that folder is deliberately excluded from database backups.
+- A key file is destroyed when deletion runs, not at commit: a rolled-back deletion leaves unreadable audio (fail closed).
+- Diarization with fewer than two labels is withheld entirely (conservative; it also drops some correct single-label results).
+- No speaker-count hint is passed to pyannote: `min_speakers` from the participant list would split one-speaker meetings.
+- CAP-10 rescinded-decision lineage and recomputation versioning were not built: lineage would send earlier knowledge to the summary provider (a new data flow), and completed recordings cannot be reprocessed.
+- The summary evaluation was run three times against OpenAI with synthetic transcripts only (small API cost, approved by the user for this task).
 
 ## Validation at this checkpoint
 
-- `npm test`: **208/208 passing** (three new multi-recording regression tests across in-memory, SQLite, and PostgreSQL/PGlite; each failed before the fix).
+- `npm test`: **236/236 passing** after the 2026-10-06 Claude session. `npm run test:sites` 4/4; `npm run build` passed.
+- `npm test`: 208/208 passing at the multi-recording fix (three new regression tests across in-memory, SQLite, and PostgreSQL/PGlite; each failed before the fix).
 - `npm run smoke:browser` and `npm run smoke:browser -- -ProcessRecording` passed with zero browser errors after the multi-recording fix.
 - `npm run build`: passed.
 - `npm run test:sites`: **4/4 passing**.
@@ -83,9 +101,10 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 
 These do not require a product decision, but preserve the stated constraints and add tests for every behavioral change:
 
-1. Run a real KMS/HSM integration and operational resilience exercise for SEC-08. The key-file path now fails closed in automated PostgreSQL tests, but the traceability matrix remains partial until a production key-management dependency is exercised.
-2. Test the prototype ZIP on a clean Windows computer with locally installed Node, Git for Windows/WSL, and PostgreSQL. Verify that it never contains secrets or data, every recipient gets fresh local credentials/key material, and the post-install server rejects a non-loopback Host header.
-3. Keep prior-meeting retrieval lexical and citation-sized until an approved local embedding model and a tenant-isolated vector-index lifecycle (creation, deletion, rebuild, backup handling) are implemented. Never send retrieval output to either external summary provider without its approval packet covering that new data flow.
+1. Run a real KMS/HSM integration and operational resilience exercise for SEC-08. Per-recording keys are wrapped by the master key file today; a KMS would replace that wrapping key.
+2. Test the prototype ZIP on a clean second Windows computer: the simulated install covered packaging, `npm ci`, build, loopback binding, Host rejection, and fresh keys, but not the PostgreSQL wizard, model download, or diarization provisioning.
+3. Record a real human reading of `evals/real-audio-script.txt` and run `npm run benchmark:real-audio` (local only; a colleague only with consent).
+4. Keep prior-meeting retrieval lexical and citation-sized until an approved local embedding model and a tenant-isolated vector-index lifecycle (creation, deletion, rebuild, backup handling) are implemented. Never send retrieval output to either external summary provider without its approval packet covering that new data flow.
 
 These require a user or organization decision first:
 
