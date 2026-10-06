@@ -13,6 +13,7 @@
     "test:sites": "node --test tests/sites-worker.test.mjs",
     "db:migrate": "node --env-file-if-exists=.env server/db-migrate.js",
     "eval:summaries": "node --env-file-if-exists=.env scripts/eval-meeting-intelligence.mjs",
+    "verify:release": "node scripts/verify-release-evidence.mjs",
     "prototype:export": "powershell -ExecutionPolicy Bypass -File scripts/export-local-prototype.ps1"
   },
   "dependencies": {

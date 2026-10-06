@@ -29,4 +29,14 @@ This service must remain loopback-only until every applicable gate below has an 
 - [ ] A consented synthetic end-to-end run proves recording, local transcription, diarization, permitted summary processing, citations, retrieval, stop/discard, deletion, audit integrity, backup, and restore reconciliation.
 - [ ] Security owner signs the release evidence and records the release commit, environment, time, and rollback plan in the protected operations record.
 
+## Repeatable technical evidence
+
+From a clean release checkout, run the following before the security review:
+
+```powershell
+npm run verify:release -- --preview=4173
+```
+
+The command runs the full automated suite, build, and Sites packaging check; verifies the required output files; checks an already-running loopback preview when `--preview` is supplied; and prints a JSON evidence record without reading or printing `.env`, connection strings, passwords, API keys, audio-key bytes, transcript text, or meeting data. Capture that output in the protected operations record with the release commit. A `technical-evidence-passed` verdict does **not** complete any manual launch gate above.
+
 Do not record or process real meeting content, enable Teams, or expose the API externally until all relevant boxes are complete.
