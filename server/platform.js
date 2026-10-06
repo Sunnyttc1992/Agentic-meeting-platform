@@ -921,23 +921,38 @@ export class MeetingIntelligencePlatform {
   }
 
   async #processorFailure(recordingId, correlationId, actor) {
-    const record = (await this.recordings.get(actor.tenantId, recordingId))
-    if (record && !['quarantined', 'deleted'].includes(record.state)) {
-      record.state = 'failed'
-      record.progress = 100
-      record.error = PROCESSOR_FAILED
-      record.processor = null
-      await this.recordings.save(record)
-      await this.knowledge.clearMeeting(record.tenantId, record.meetingId)
-      await this.commitments.clearMeeting(record.tenantId, record.meetingId)
+    const fail = async (transaction = null) => {
+      const recordings = transaction?.recordings ?? this.recordings
+      const knowledge = transaction?.knowledge ?? this.knowledge
+      const commitments = transaction?.commitments ?? this.commitments
+      const record = transaction
+        ? (await recordings.get(recordingId))
+        : (await recordings.get(actor.tenantId, recordingId))
+      if (record && !['quarantined', 'deleted'].includes(record.state)) {
+        record.state = 'failed'
+        record.progress = 100
+        record.error = PROCESSOR_FAILED
+        record.processor = null
+        await recordings.save(record)
+        if (transaction) {
+          await knowledge.clearMeeting(record.meetingId)
+          await commitments.clearMeeting(record.meetingId)
+        } else {
+          await knowledge.clearMeeting(record.tenantId, record.meetingId)
+          await commitments.clearMeeting(record.tenantId, record.meetingId)
+        }
+      }
+      // Processor failures are deliberately not outbox events. The processor
+      // is untrusted and a failed payload must never become a downstream
+      // signal or metadata channel; the state and this redacted audit event
+      // still commit together for durable storage.
+      await this.#audit({
+        correlationId, principal: actor, action: 'recording.process.complete',
+        meetingId: record?.meetingId ?? null, recordingId, outcome: 'denied', reason: PROCESSOR_FAILED,
+      }, transaction)
     }
-    // Processor failures are deliberately not outbox events. The processor is
-    // untrusted and a failed payload must never become a downstream signal or
-    // metadata channel; audit remains the separate, redacted evidence trail.
-    await this.#audit({
-      correlationId, principal: actor, action: 'recording.process.complete',
-      meetingId: record?.meetingId ?? null, recordingId, outcome: 'denied', reason: PROCESSOR_FAILED,
-    })
+    if (this.#tenantTransaction) return this.#tenantTransaction(actor.tenantId, fail)
+    return fail()
   }
 
   async createMeeting(input, body, correlationId = randomUUID()) {
@@ -1285,10 +1300,13 @@ export class MeetingIntelligencePlatform {
           type: 'recording.completed', aggregateType: 'recording', aggregateId: recording.id,
           revision: 'completed', payload: Object.freeze({ state: 'completed' }),
         }, transaction)
+        await this.#audit({
+          correlationId, principal: actor, action: 'recording.process.complete',
+          meetingId: recording.meetingId, recordingId, outcome: 'allowed',
+        }, transaction)
       }
       if (this.#tenantTransaction) await this.#tenantTransaction(recording.tenantId, publish)
       else await publish()
-      await this.#audit({ correlationId, principal: actor, action: 'recording.process.complete', meetingId: recording.meetingId, recordingId, outcome: 'allowed' })
     } catch {
       await this.#processorFailure(recordingId, correlationId, actor)
     }
