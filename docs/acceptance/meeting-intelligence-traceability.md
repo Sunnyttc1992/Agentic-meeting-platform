@@ -120,6 +120,53 @@ Reject the milestone if any of the following is true:
 11. A service identity can bypass user policy, impersonate a user, or perform cross-tenant bulk reads.
 12. Production-readiness is claimed solely from in-memory tests without P and O evidence.
 
+## Implementation status (assessed 2026-10-06)
+
+Assessed by the coding agent from the automated test suite (191 tests), not by the Reviewer. Done means the M-level criteria have passing tests; partial means some criteria are untested or unimplemented. P and O columns list only evidence that exists today. Overall: M about 76% (30.5 of 40 with partial = 0.5), P about 13%, O 0%.
+
+| ID | M | P / O evidence today | Main gap |
+|---|---|---|---|
+| CAP-01 | done | Real browser microphone capture on loopback | Conferencing capture |
+| CAP-02 | done | none | Cross-device stop reaches an open studio only at lease renewal |
+| CAP-03 | partial | none | Teams connector intentionally unconnected |
+| CAP-04 | partial | Local pyannote run on synthetic two-voice audio | Overlap/crosstalk fixtures; real-audio quality benchmark |
+| CAP-05 | partial | none | Reviewed, versioned human correction flow |
+| CAP-06 | done | Real local Whisper runs | Load and failure tests |
+| CAP-07 | done | PostgreSQL storage, migrations, RLS tests | none at M |
+| CAP-08 | done | One live OpenAI synthetic run | Evaluation set; approval packets |
+| CAP-09 | done | none | Model evaluation |
+| CAP-10 | partial | none | Rescinded decisions and recomputation versioning |
+| AUTH-01 | done | Tenant RLS in PostgreSQL | Per-participant grants in the database |
+| AUTH-02 | done | none | IdP/HR hierarchy source |
+| AUTH-03 | partial | none | Revocation SLA for cached/derived paths |
+| AUTH-04 | done | PostgreSQL RLS tenant isolation | Object store, when added |
+| AUTH-05 | done | Sealed tenant facades; RLS | Static checks |
+| AUTH-06 | partial | none | Redaction and topic-level restriction |
+| AUTH-07 | partial | none | No search/vector store exists yet |
+| AUTH-08 | done | none | none at M |
+| AUTH-09 | partial | Least-privilege DB role | Workload identities |
+| AUTH-10 | partial | Rate limits, strict schemas | Token authentication (Entra deferred) |
+| PRIV-01 | done | none | none at M |
+| PRIV-02 | done | none | Measured media boundary on remote devices |
+| PRIV-03 | done | none | none at M |
+| PRIV-04 | done | none | Durable scheduler, downstream acknowledgements |
+| PRIV-05 | partial | SQLite secure delete proven on raw files | PostgreSQL dead tuples, backups, provider acknowledgements |
+| PRIV-06 | done | none | Hold placement/release workflow and roles |
+| SEC-01 | partial | AES-256-GCM audio at rest | TLS, KMS, per-recording keys |
+| SEC-02 | none | none | Entra deferred by decision |
+| SEC-03 | partial | Least-privilege DB role | Role model review |
+| SEC-04 | done | none | none at M |
+| SEC-05 | done | Database rejects audit edits (SQLite, PostgreSQL) | External audit sink |
+| SEC-06 | done | none | Watermarking, link expiry |
+| SEC-07 | done | none | none at M |
+| SEC-08 | partial | none | KMS/audit-sink outage tests |
+| AI-01 | done | none | none at M |
+| AI-02 | done | none | none at M |
+| AI-03 | done | none | Model/pipeline version on every claim |
+| AI-04 | none | none | No agent tools exist yet |
+| AI-05 | none | none | No agent memory exists yet |
+| AI-06 | done | none | none at M |
+
 ## Current verdict
 
 **Not approved / not yet reviewed against implementation.** This document defines the evidence required for a later review. Passing the prototype build or UI tests does not demonstrate the privacy, authorization, security, deletion, or agentic invariants above.
