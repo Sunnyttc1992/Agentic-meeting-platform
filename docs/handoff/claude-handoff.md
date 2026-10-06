@@ -37,23 +37,29 @@ The user explicitly approved the local pyannote Community-1 pilot. Microsoft Ent
 - A fresh local preview started on 127.0.0.1:4174; GET / returned 200 and authenticated GET /pipeline/readiness returned 200. It reported loopback-only scope, local Whisper available/cached, no Anthropic credential, and Teams disconnected.
 - Native browser automation is currently unavailable because its computer-use kernel cannot write its assets. Use local HTTP checks unless that environment issue changes.
 
-## Immediate next action
+## Diarization pilot status (2026-10-06)
 
-The checkpoint is committed and revalidated. The pilot is blocked on the user provisioning the model (as of 2026-10-06, .env has no DIARIZATION_* keys).
+The user provisioned Community-1 with the wizard. Assets live outside the repository in D:/MeetingLedger/diarization (runtime/, speaker-diarization-community-1/ at revision 3533c8cf, tmp/, community-1-inventory.txt). .env sets DIARIZATION_PYTHON, DIARIZATION_MODEL_DIR, and MEETING_DIARIZATION_TEMP_DIR. No Hugging Face token was found in .env, the inventory, or the model's Git config.
 
-Do not run the wizard yourself: it opens a browser and requires the user's Hugging Face account and an interactive one-time token. Ask the user to run this from Git Bash in the repository:
+Wizard fixes made during provisioning:
+- From PowerShell, plain `bash` opens WSL, where Windows paths don't resolve. The wizard now exits early outside Git Bash. Run it with `& "C:\Program Files\Gitinash.exe" scripts/setup-windows-diarization.sh`.
+- Pasted Windows paths (backslashes, quotes) are normalized.
+- VS Code's terminal routes Git credential prompts to an editor pop-up via GIT_ASKPASS. The clone now unsets that, so the prompt stays in the terminal (not yet exercised interactively).
+- The worker decodes the server's validated PCM WAV with Python's `wave` module and passes an in-memory waveform to pyannote. FFmpeg is not installed on this host and is no longer needed.
 
-    bash scripts/setup-windows-diarization.sh
+Validation on a synthetic two-voice Windows TTS WAV (35.4 s; no real meeting audio):
+- Worker on CPU (torch 2.14.1+cpu, 8 threads, no CUDA): 21.9 s cold; 16.0 s inference (real-time factor 0.45).
+- Full in-memory pipeline (local Whisper + pyannote, Claude deliberately disabled): completed in 36.9 s. 7/7 segments were attributed to the correct voice with anonymous labels, verifiedParticipantId=null, identityConfidence=null, binding unverified-diarization-only.
+- The diarization temporary directory was empty afterwards. Offline was enforced by the worker's HF offline environment flags; no firewall-level test was done.
+- Timings, licence notice, and worker commit were appended to the operator inventory.
+- The loopback preview was restarted on 127.0.0.1:4174 with diarization active (storage: PostgreSQL via DATABASE_URL). /pipeline/readiness does not yet report diarization status.
 
-The model card is gated, CC-BY-4.0, and its current offline instructions specify Git LFS and an interactive Hugging Face token prompt. The wizard never writes that token to .env, source, audit, or logs. It writes only the virtual-environment Python, local model directory, and temporary-directory paths to .env.
+## Next actions
 
-## After the user provisions the model
-
-1. Restart only the loopback preview server and process a consented, non-sensitive short test recording.
-2. Measure CPU runtime first; do not enable a GPU path until its runtime/VRAM behavior is measured on this Windows host. The current worker intentionally uses pyannote's CPU default.
-3. Confirm the worker succeeds while offline and that its temporary directory is empty afterwards.
-4. Record model Git revision, package versions, model file hashes, license notice, and timings in the protected operator inventory created by the wizard.
-5. Build a human correction/mapping UI only after a separate review. It must be per-meeting, reversible, audited without voice embeddings/audio/transcript text, and never provide automatic identity, attendance, authorization, or action ownership.
+1. Optional: test with one consented, non-sensitive real recording through the UI. CPU diarization of a one-hour meeting is estimated at about 27 minutes in addition to Whisper.
+2. Do not enable a GPU path until its runtime/VRAM behavior is measured on this host.
+3. Consider adding diarization configured/unconfigured state to /pipeline/readiness (paths must not be exposed).
+4. Build a human correction/mapping UI only after a separate review. It must be per-meeting, reversible, audited without voice embeddings/audio/transcript text, and never provide automatic identity, attendance, authorization, or action ownership.
 
 ## Non-negotiable constraints
 
