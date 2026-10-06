@@ -11,7 +11,8 @@
     "test:server": "node --test server/**/*.test.js",
     "test:frontend": "node --test tests/recording-machine.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs",
-    "db:migrate": "node --env-file-if-exists=.env server/db-migrate.js"
+    "db:migrate": "node --env-file-if-exists=.env server/db-migrate.js",
+    "eval:summaries": "node --env-file-if-exists=.env scripts/eval-meeting-intelligence.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
