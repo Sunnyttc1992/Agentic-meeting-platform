@@ -5,7 +5,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 ## Project and checkpoint
 
 - Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
-- Latest checkpoint: `acfe663 Filter stock Whisper silence hallucinations`.
+- Latest checkpoint: `341808e Fail closed when request audit writes fail`.
 - The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
 - Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
@@ -29,13 +29,15 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 6. OpenAI summary adapter plus an opt-in synthetic summary evaluation (`npm run eval:summaries`; it consumes API credit and is not part of `npm test`).
 7. Headless Chrome studio smoke coverage for consent, fake microphone, record, stop, and process.
 8. Latest fix: Whisper's exact stock silence phrases (`Thank you.` and `Thanks for watching.`) are suppressed only when their matching audio span is silent or a steady sine tone. Speech-like amplitude or zero-crossing variation preserves the phrase. This deliberately is not a broad voice-activity or content filter.
+9. Request-path audit fail-closed boundary: every `#audited` state transition on a storage-backed platform writes its allowed audit event in the same tenant transaction. If that append fails, the transition rolls back. Capture-stop now uses this boundary too. Processor jobs enqueue only after that transaction commits, so an audit outage cannot run a job for rolled-back recording state.
 
 ## Validation at this checkpoint
 
-- `npm test`: **196/196 passing**.
+- `npm test`: **198/198 passing**.
 - `npm run build`: passed.
 - `npm run test:sites`: **4/4 passing**.
-- `git diff --check`: passed before committing `acfe663`.
+- Durable SQLite, PostgreSQL/PGlite, and node-postgres wire-protocol suites passed after the audit-boundary change.
+- `git diff --check`: passed before committing `341808e`.
 - Earlier validation also passed `python -m py_compile server/diarize_worker.py` and `bash -n scripts/setup-windows-diarization.sh`.
 - A prior synthetic two-voice local run completed Whisper, pyannote, and OpenAI end to end; labels were anonymous and the diarization temp directory was empty afterward.
 
@@ -58,7 +60,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 
 These do not require a product decision, but preserve the stated constraints and add tests for every behavioral change:
 
-1. Improve SEC-08 audit-sink failure handling. Today an operation can persist if the subsequent audit write fails. The two viable designs are recording an attempt first or making operation-plus-audit atomic; discuss the trade-off with the user before choosing because it affects existing event semantics and the PostgreSQL transaction facade.
+1. Extend SEC-08 fail-closed behavior to background processing completion/failure and any remaining scheduler-only state paths. The request path is atomic now, but the traceability matrix deliberately remains partial until those paths and broader audit-sink outage behavior are covered.
 2. Define a PostgreSQL deletion-remnants strategy for PRIV-05 (for example, documented `VACUUM` scheduling or per-recording crypto-shredding) and update the operator documentation.
 3. Reduce cross-device capture-stop latency with a lightweight lease-status poll during capture.
 
