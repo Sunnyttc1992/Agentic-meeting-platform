@@ -5,7 +5,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 ## Project and checkpoint
 
 - Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
-- Latest checkpoint: `5c300b7 Add bounded authorized meeting retrieval`.
+- Latest checkpoint: `5390d5a Add per-computer local prototype distribution`.
 - The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
 - Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
@@ -13,6 +13,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 
 - The visual direction is **Executive Ledger**: restrained graphite surfaces, warm metallic accents, editorial typography, evidence-linked intelligence, and executive-level density.
 - The delivery remains **loopback-only on Windows**. Microsoft Entra is deferred; Microsoft Teams stays explicitly unconnected. Do not expose the API to a LAN or deploy it.
+- The approved delivery path before Entra is one **separate local prototype per Windows computer**. Each installation gets its own PostgreSQL database/roles, `.env`, encrypted-audio key, durable data, and local model cache. Never copy these between computers or treat the package as a shared service.
 - Storage in production is local, self-hosted PostgreSQL on Windows when `DATABASE_URL` is set, using a least-privilege application role and database RLS. SQLite remains the local fallback. Audio is AES-256-GCM encrypted with an operator-supplied key file.
 - Speech-to-text is local Whisper. Speaker diarization is local, offline pyannote Community-1. Audio and voice data never leave the machine.
 - Diarization creates anonymous, per-meeting labels only. No voiceprints, enrollment, automatic names, attendance, authorization, or action-owner assignment.
@@ -34,12 +35,14 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 11. PostgreSQL deletion operations: Windows operators now run the audited retention sweep followed by daily `VACUUM (ANALYZE)` in an approved window; `VACUUM FULL` is reserved for reviewed maintenance. This reduces dead-tuple exposure but does not replace future per-recording crypto-shredding.
 12. Cross-device capture stop: authenticated participants can poll the minimal `GET /meetings/:id/recording/authorization-status` capability. The studio checks it every 5 seconds while recording and discards local capture when it becomes inactive; no lease is disclosed or refreshed by this endpoint.
 13. Production launch is explicitly gated in `docs/operations/production-launch-gate.md`; it lists the Windows, Entra, Teams, provider-approval, and release-evidence conditions that require organization action.
+14. Per-computer prototype distribution: `npm run prototype:export` creates a reviewed-source ZIP and SHA-256 sidecar without secrets, data, caches, build output, dependencies, or Git history. Each recipient runs `scripts/install-local-prototype.ps1`, which installs pinned dependencies, invokes the existing PostgreSQL setup wizard only when needed, and builds the bundle. `scripts/start-local-prototype.ps1` starts the resulting instance only at `localhost`/`127.0.0.1`. See `docs/operations/local-prototype-distribution.md`.
 
 ## Validation at this checkpoint
 
-- `npm test`: **199/199 passing**.
+- `npm test`: **200/200 passing**.
 - `npm run build`: passed.
 - `npm run test:sites`: **4/4 passing**.
+- Parsed all three new PowerShell scripts and ran `bash -n scripts/setup-windows-postgres.sh`.
 - Durable SQLite, PostgreSQL/PGlite, and node-postgres wire-protocol suites passed after the audit-boundary change.
 - `git diff --check`: passed before committing `341808e`.
 - Earlier validation also passed `python -m py_compile server/diarize_worker.py` and `bash -n scripts/setup-windows-diarization.sh`.
@@ -65,9 +68,8 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 These do not require a product decision, but preserve the stated constraints and add tests for every behavioral change:
 
 1. Extend SEC-08 fail-closed behavior to background policy-revocation/quarantine paths and run broader audit-sink/KMS outage exercises. Request and processor terminal transitions are atomic now, but the traceability matrix deliberately remains partial until those remaining paths are covered.
-2. Build a bounded retrieval layer for previous meetings: require a strict query and result limit, retrieve only after authorization, return citation-sized excerpts with meeting/source IDs, and audit each selected source. Keep it lexical until an approved local embedding model and a tenant-isolated vector-index lifecycle (creation, deletion, rebuild, backup handling) are implemented. Never send retrieval output to either external summary provider without its approval packet covering that new data flow.
-3. Define a PostgreSQL deletion-remnants strategy for PRIV-05 (for example, documented `VACUUM` scheduling or per-recording crypto-shredding) and update the operator documentation.
-4. Reduce cross-device capture-stop latency with a lightweight lease-status poll during capture.
+2. Test the prototype ZIP on a clean Windows computer with locally installed Node, Git for Windows/WSL, and PostgreSQL. Verify that it never contains secrets or data, every recipient gets fresh local credentials/key material, and the post-install server rejects a non-loopback Host header.
+3. Keep prior-meeting retrieval lexical and citation-sized until an approved local embedding model and a tenant-isolated vector-index lifecycle (creation, deletion, rebuild, backup handling) are implemented. Never send retrieval output to either external summary provider without its approval packet covering that new data flow.
 
 These require a user or organization decision first:
 
