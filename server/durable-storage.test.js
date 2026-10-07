@@ -9,6 +9,7 @@ import { FixedClock } from './adapters/in-memory.js'
 import { openLocalDurableStorage } from './adapters/sqlite.js'
 import { verifyAuditChain } from './audit.js'
 import { ClaudeMeetingIntelligence } from './intelligence.js'
+import { conceptEmbedder } from '../evals/concept-embedder.mjs'
 import { MeetingIntelligencePlatform } from './platform.js'
 import { PolicyEngine } from './policy.js'
 import { LocalMeetingProcessor } from './speech.js'
@@ -30,7 +31,7 @@ function tempDirectory() { return mkdtempSync(join(tmpdir(), 'meeting-ledger-'))
 
 const chatAnswerer = { providerName: 'Test provider', answer: async ({ excerpts }) => ({ answer: 'Keep the phased rollout.', answered: true, citations: [excerpts[0].label], model: 'test-model' }) }
 
-function openPlatform(directory, { schedule = (job) => job() } = {}) {
+function openPlatform(directory, { schedule = (job) => job(), embedder = null } = {}) {
   const durable = openLocalDurableStorage({ directory })
   const client = { beta: { messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(REPLY) }] }) } } }
   const platform = new MeetingIntelligencePlatform({
@@ -39,7 +40,7 @@ function openPlatform(directory, { schedule = (job) => job() } = {}) {
       transcriber: { transcribe: async () => [{ startMs: 0, endMs: 3000, text: 'Rollout stays phased.' }, { startMs: 3000, endMs: 6000, text: 'Sam sends the security findings by October 20.' }] },
       intelligence: new ClaudeMeetingIntelligence({ client }),
     }),
-    acceptedMimeTypes: [SPEECH_WAV_MIME_TYPE], schedule, chatAnswerer,
+    acceptedMimeTypes: [SPEECH_WAV_MIME_TYPE], schedule, chatAnswerer, embedder,
   })
   return { platform, durable }
 }
@@ -201,6 +202,30 @@ test('saved chat survives a restart, and deleting the meeting removes its turns 
     for (const file of readdirSync(directory).filter((name) => name.startsWith('meeting-ledger.sqlite'))) {
       assert.equal(readFileSync(join(directory, file)).indexOf(Buffer.from('zebracorn')), -1, `${file} keeps no deleted chat question`)
     }
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('retrieval vectors persist as float32 in SQLite and are deleted with the meeting', async () => {
+  const directory = tempDirectory()
+  try {
+    const first = openPlatform(directory, { embedder: conceptEmbedder() })
+    await seedMeeting(first.platform)
+    await first.platform.startProcessing(alex, 'meeting-1', await uploadAudio(first.platform))
+    await settle()
+    assert.equal((await first.platform.askChat(sam, { question: 'Is the rollout funded?' })).turn.retrieval, 'hybrid')
+    const stored = await first.platform.embeddings.forMeeting('northstar', 'meeting-1')
+    assert.ok(stored.length > 0 && stored.every((row) => row.model === 'fake-concepts' && row.vector.length === 7))
+    first.durable.close()
+    const embedder = conceptEmbedder()
+    const second = openPlatform(directory, { embedder })
+    try {
+      const reloaded = await second.platform.embeddings.forMeeting('northstar', 'meeting-1')
+      assert.deepEqual(reloaded.map((row) => row.vector.map((value) => Math.round(value * 1e5))), stored.map((row) => row.vector.map((value) => Math.round(value * 1e5))))
+      await second.platform.askChat(sam, { question: 'Is the rollout funded?' })
+      assert.equal(embedder.embedded.length, 1, 'after a restart only the question is embedded')
+      await second.platform.deleteMeetingContent(alex, 'meeting-1')
+      assert.deepEqual(await second.platform.embeddings.forMeeting('northstar', 'meeting-1'), [])
+    } finally { second.durable.close() }
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
 

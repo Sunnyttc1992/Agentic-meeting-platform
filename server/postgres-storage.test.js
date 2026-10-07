@@ -10,6 +10,7 @@ import { openPostgresStorage } from './adapters/postgres.js'
 import { assertPostgresSchemaCurrent, migratePostgres, POSTGRES_MIGRATIONS } from './adapters/postgres-schema.js'
 import { verifyAuditChain } from './audit.js'
 import { ClaudeMeetingIntelligence } from './intelligence.js'
+import { conceptEmbedder } from '../evals/concept-embedder.mjs'
 import { MeetingIntelligencePlatform } from './platform.js'
 import { PolicyEngine } from './policy.js'
 import { LocalMeetingProcessor } from './speech.js'
@@ -55,7 +56,7 @@ async function openDatabase(dataDir = undefined, { migrate = true } = {}) {
 
 const chatAnswerer = { providerName: 'Test provider', answer: async ({ excerpts }) => ({ answer: 'Keep the phased rollout.', answered: true, citations: [excerpts[0].label], model: 'test-model' }) }
 
-function platformOn(storage, { schedule = (job) => job() } = {}) {
+function platformOn(storage, { schedule = (job) => job(), embedder = null } = {}) {
   const client = { beta: { messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(REPLY) }] }) } } }
   return new MeetingIntelligencePlatform({
     storage, clock: new FixedClock('2026-10-03T12:00:00Z'), policy: new PolicyEngine(),
@@ -63,7 +64,7 @@ function platformOn(storage, { schedule = (job) => job() } = {}) {
       transcriber: { transcribe: async () => [{ startMs: 0, endMs: 3000, text: 'Rollout stays phased.' }, { startMs: 3000, endMs: 6000, text: 'Sam sends the security findings by October 20.' }] },
       intelligence: new ClaudeMeetingIntelligence({ client }),
     }),
-    acceptedMimeTypes: [SPEECH_WAV_MIME_TYPE], schedule, chatAnswerer,
+    acceptedMimeTypes: [SPEECH_WAV_MIME_TYPE], schedule, chatAnswerer, embedder,
   })
 }
 
@@ -153,6 +154,43 @@ test('saved chat is stored per tenant and user in PostgreSQL and deleted with it
   } finally { await database.close() }
 })
 
+test('retrieval vectors are tenant-isolated in PostgreSQL and deleted with the meeting', async () => {
+  const database = await openDatabase()
+  try {
+    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR })
+    const platform = platformOn(storage, { embedder: conceptEmbedder() })
+    await platform.startProcessing(alex, 'meeting-1', await seedAndUpload(platform))
+    await settle()
+    assert.equal((await platform.askChat(sam, { question: 'Is the rollout funded?' })).turn.retrieval, 'hybrid')
+    assert.ok((await storage.scope({ tenantId: 'northstar' }).embeddings.forMeeting('meeting-1')).length > 0)
+    assert.deepEqual(await storage.scope({ tenantId: 'southstar' }).embeddings.forMeeting('meeting-1'), [], 'row-level security hides other tenants')
+    await platform.deleteMeetingContent(alex, 'meeting-1')
+    assert.deepEqual(await storage.scope({ tenantId: 'northstar' }).embeddings.forMeeting('meeting-1'), [])
+  } finally { await database.close() }
+})
+
+test('a database migrated for chat but not for vectors answers with keyword retrieval', async () => {
+  const database = await openDatabase(undefined, { migrate: false })
+  try {
+    await database.asAdmin(async (admin) => {
+      await admin.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())')
+      for (const migration of POSTGRES_MIGRATIONS.slice(0, 2)) {
+        await admin.exec(migration.sql)
+        await admin.query('INSERT INTO schema_migrations (version) VALUES ($1)', [migration.version])
+      }
+      await admin.exec(`GRANT SELECT, INSERT, UPDATE, DELETE ON meetings, recordings, recording_content, transcript_segments, knowledge_assertions, commitments, outbox_events, chat_turns TO ${APP_ROLE}; GRANT SELECT, INSERT ON audit_events TO ${APP_ROLE}; GRANT SELECT ON schema_migrations TO ${APP_ROLE}; GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO ${APP_ROLE};`)
+    })
+    await assertPostgresSchemaCurrent(database.app)
+    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR })
+    const platform = platformOn(storage, { embedder: conceptEmbedder() })
+    await platform.startProcessing(alex, 'meeting-1', await seedAndUpload(platform))
+    await settle()
+    const { turn } = await platform.askChat(sam, { question: 'phased rollout?' })
+    assert.deepEqual([turn.retrieval, turn.status], ['keyword', 'answered'])
+    await platform.deleteMeetingContent(alex, 'meeting-1')
+  } finally { await database.close() }
+})
+
 test('a database on the first schema still serves meetings, and chat asks for the migration until it runs', async () => {
   const database = await openDatabase(undefined, { migrate: false })
   try {
@@ -168,6 +206,7 @@ test('a database on the first schema still serves meetings, and chat asks for th
     await platform.startProcessing(alex, 'meeting-1', await seedAndUpload(platform))
     await settle()
     await assert.rejects(platform.askChat(sam, { question: 'phased rollout?' }), { code: 'CHAT_NOT_MIGRATED' })
+    // Without migration 003 the vector table is absent too; deletion below still succeeds.
     await assert.rejects(platform.getChatHistory(sam), { code: 'CHAT_NOT_MIGRATED' })
     await platform.deleteMeetingContent(alex, 'meeting-1')
 

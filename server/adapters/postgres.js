@@ -220,6 +220,33 @@ export function openPostgresStorage({ connect, audioKey, audioKeyProvider = null
     }),
   }
 
+  // Retrieval vectors. Without migration 003 the table is absent: reads report
+  // EMBEDDINGS_NOT_MIGRATED (chat then falls back to keyword retrieval) and
+  // deletion has nothing to delete.
+  const embeddingTable = async (client) => (await client.query("SELECT to_regclass('public.knowledge_embeddings') IS NOT NULL AS present")).rows[0]?.present === true
+  const requireEmbeddingTable = async (client) => {
+    if (!(await embeddingTable(client))) throw new DomainError('EMBEDDINGS_NOT_MIGRATED', 'Meaning-based search needs a database migration: run npm run db:migrate', 503)
+  }
+  const vectorBytes = (vector) => Buffer.from(Float32Array.from(vector).buffer)
+  const vectorValues = (bytes) => Array.from(new Float32Array(Uint8Array.from(bytes).buffer))
+  const embeddings = {
+    forMeeting: (tenantId, meetingId) => inTenant(tenantId, async (client) => {
+      await requireEmbeddingTable(client)
+      return (await client.query('SELECT source_id, model, text_hash, vector FROM knowledge_embeddings WHERE tenant_id = $1 AND meeting_id = $2', [tenantId, meetingId])).rows
+        .map((row) => ({ tenantId, meetingId, sourceId: row.source_id, model: row.model, textHash: row.text_hash, vector: vectorValues(row.vector) }))
+    }),
+    replaceMeeting: (tenantId, meetingId, rows) => inTenant(tenantId, async (client) => {
+      await requireEmbeddingTable(client)
+      await client.query('DELETE FROM knowledge_embeddings WHERE tenant_id = $1 AND meeting_id = $2', [tenantId, meetingId])
+      for (const row of rows) {
+        await client.query('INSERT INTO knowledge_embeddings (tenant_id, meeting_id, source_id, model, text_hash, vector) VALUES ($1, $2, $3, $4, $5, $6)', [tenantId, meetingId, row.sourceId, row.model, row.textHash, vectorBytes(row.vector)])
+      }
+    }),
+    clearMeeting: (tenantId, meetingId) => inTenant(tenantId, async (client) => {
+      if (await embeddingTable(client)) await client.query('DELETE FROM knowledge_embeddings WHERE tenant_id = $1 AND meeting_id = $2', [tenantId, meetingId])
+    }),
+  }
+
   const outbox = {
     enqueue: (scope, event) => {
       const stored = canonicalOutboxEvent(scope, event)
@@ -236,7 +263,7 @@ export function openPostgresStorage({ connect, audioKey, audioKeyProvider = null
 
   const storage = composeRepositoryStorage({
     kind: 'postgresql',
-    repositories: { meetings, knowledge, recordings, audit, commitments, outbox, chat },
+    repositories: { meetings, knowledge, recordings, audit, commitments, outbox, chat, embeddings },
     runAtomically: (work, scope) => transaction(scope.tenantId, () => work()),
   })
   return Object.freeze({ storage, close })

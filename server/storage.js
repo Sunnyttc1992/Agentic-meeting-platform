@@ -3,6 +3,7 @@ import { invariant } from './errors.js'
 import {
   InMemoryAppendOnlyAudit,
   InMemoryChatRepository,
+  InMemoryEmbeddingRepository,
   InMemoryCommitmentRegistry,
   InMemoryKnowledgeRepository,
   InMemoryMeetingRepository,
@@ -33,7 +34,7 @@ export const CANONICAL_DATA_SETS = Object.freeze([
 const STORAGE_BUNDLES = new WeakSet()
 const TENANT_FACADES = new WeakSet()
 const FACADE_REPOSITORIES = Object.freeze([
-  'meetings', 'knowledge', 'recordings', 'audit', 'commitments', 'outbox', 'chat',
+  'meetings', 'knowledge', 'recordings', 'audit', 'commitments', 'outbox', 'chat', 'embeddings',
 ])
 
 const READER_METHODS = Object.freeze({
@@ -44,6 +45,7 @@ const READER_METHODS = Object.freeze({
   commitments: Object.freeze(['query']),
   outbox: Object.freeze(['list']),
   chat: Object.freeze(['forUser']),
+  embeddings: Object.freeze(['forMeeting']),
 })
 
 const WRITER_METHODS = Object.freeze({
@@ -54,6 +56,7 @@ const WRITER_METHODS = Object.freeze({
   commitments: Object.freeze(['replaceMeeting', 'clearMeeting']),
   outbox: Object.freeze(['enqueue']),
   chat: Object.freeze(['appendTurn', 'clearForUser', 'clearMeeting']),
+  embeddings: Object.freeze(['replaceMeeting', 'clearMeeting']),
 })
 
 export function tenantScope(input) {
@@ -358,6 +361,10 @@ function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxE
   const chat = {
     forUser: (userId) => repositories.chat.forUser(tenantId, userId),
   }
+  // Retrieval vectors derived from a meeting's knowledge.
+  const embeddings = {
+    forMeeting: (meetingId) => repositories.embeddings.forMeeting(tenantId, meetingId),
+  }
 
   if (writable) {
     meetings.save = (record) => {
@@ -407,6 +414,12 @@ function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxE
     }
     chat.clearForUser = (userId) => repositories.chat.clearForUser(tenantId, userId)
     chat.clearMeeting = (meetingId) => repositories.chat.clearMeeting(tenantId, meetingId)
+    embeddings.replaceMeeting = (meetingId, rows) => {
+      assertTenantRecordList(normalized, rows, 'embedding')
+      invariant(rows.every((row) => row.meetingId === meetingId), 'TENANT_SCOPE_VIOLATION', 'Embeddings must remain inside the active meeting scope', 403)
+      return repositories.embeddings.replaceMeeting(tenantId, meetingId, rows)
+    }
+    embeddings.clearMeeting = (meetingId) => repositories.embeddings.clearMeeting(tenantId, meetingId)
     outbox.enqueue = (event) => {
       assertTenantRecord(normalized, event, 'outbox event')
       // The injector exists solely to exercise the prototype transaction
@@ -427,6 +440,7 @@ function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxE
     commitments,
     outbox,
     chat,
+    embeddings,
   }, { writable })
 }
 
@@ -468,6 +482,7 @@ export function createInMemoryMeetingStorage({ shouldFailOutboxEnqueue = null, s
     commitments: new InMemoryCommitmentRegistry(),
     outbox: new InMemoryOutboxRepository(),
     chat: new InMemoryChatRepository(),
+    embeddings: new InMemoryEmbeddingRepository(),
   }
   return composeRepositoryStorage({
     kind: 'in-memory-prototype',

@@ -1,15 +1,18 @@
 // RAG evaluation for meeting chat on the synthetic set in evals/rag-cases.mjs.
 //
-//   npm run eval:rag                 retrieval only: local, free, deterministic
+//   npm run eval:rag                 retrieval only: local and free; hybrid
+//                                    (keywords + local bge-m3 via Ollama) when
+//                                    Ollama is running, otherwise keywords
+//   npm run eval:rag -- --keyword    keyword retrieval only, for comparison
 //   npm run eval:rag -- --answers    also scores written answers; sends the
 //                                    synthetic excerpts to MEETING_CHAT_PROVIDER
 //                                    and costs real API credit
 //   npm run eval:rag -- --json       machine-readable output
 import { parseArgs } from 'node:util'
-import { createChatAnswerer } from '../server/development.js'
+import { createChatAnswerer, createEmbedder } from '../server/development.js'
 import { runRagEvaluation } from '../evals/rag-harness.mjs'
 
-const { values } = parseArgs({ options: { answers: { type: 'boolean', default: false }, json: { type: 'boolean', default: false } } })
+const { values } = parseArgs({ options: { answers: { type: 'boolean', default: false }, json: { type: 'boolean', default: false }, keyword: { type: 'boolean', default: false } } })
 let chatAnswerer = null
 if (values.answers) {
   chatAnswerer = createChatAnswerer()
@@ -19,12 +22,14 @@ if (values.answers) {
   }
 }
 
-const { rows, summary } = await runRagEvaluation({ chatAnswerer })
+const embedder = values.keyword ? null : createEmbedder()
+const { rows, summary } = await runRagEvaluation({ chatAnswerer, embedder })
+const mode = rows.every((row) => row.retrievalMode === 'hybrid') ? `hybrid (keywords + ${embedder.model})` : embedder ? 'keywords (embedding service unavailable)' : 'keywords'
 if (values.json) {
   console.log(JSON.stringify({ rows: rows.map(({ id, category, retrieved, retrieval, answer, leaked }) => ({ id, category, retrieved, retrieval, answer, leaked })), summary }, null, 2))
 } else {
   const cell = (value) => (value === null || value === undefined ? '  -  ' : value.toFixed(2).padStart(5))
-  console.log(`Retrieval: lexical keywords${chatAnswerer ? ` · Answers: ${chatAnswerer.providerName} (${chatAnswerer.model})` : ''}\n`)
+  console.log(`Retrieval: ${mode}${chatAnswerer ? ` · Answers: ${chatAnswerer.providerName} (${chatAnswerer.model})` : ''}\n`)
   console.log('id   category       recall   MRR  nDCG  prec' + (chatAnswerer ? '  status        cite-P cite-R facts' : ''))
   for (const row of rows) {
     const r = row.retrieval

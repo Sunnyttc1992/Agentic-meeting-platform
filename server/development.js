@@ -10,6 +10,7 @@ import { LocalPyannoteDiarizer } from './diarization.js'
 import { ClaudeMeetingIntelligence } from './intelligence.js'
 import { OpenAIMeetingIntelligence } from './intelligence-openai.js'
 import { ClaudeChatAnswerer, OpenAIChatAnswerer } from './chat.js'
+import { OllamaEmbedder } from './embeddings.js'
 import { RECORDING_MIME_TYPES, SPEECH_WAV_MIME_TYPE } from '../src/recordingFormats.js'
 
 // 16 kHz mono 16-bit WAV is 32 KB/s: 160 MB holds roughly 83 minutes.
@@ -67,6 +68,16 @@ export function createChatAnswerer(env = process.env) {
   return null
 }
 
+// Meaning-based chat retrieval uses a local embedding model through Ollama on
+// this computer (bge-m3 unless MEETING_EMBEDDING_MODEL names another). Set
+// MEETING_EMBEDDING_MODEL=none to use keyword retrieval only. When Ollama is
+// not running, chat falls back to keywords per question.
+export function createEmbedder(env = process.env) {
+  const model = String(env.MEETING_EMBEDDING_MODEL ?? '').trim()
+  if (model.toLowerCase() === 'none') return null
+  return new OllamaEmbedder({ baseUrl: env.OLLAMA_URL ?? 'http://127.0.0.1:11434', ...(model ? { model } : {}) })
+}
+
 function createMeetingIntelligence(env) {
   const provider = summaryProvider(env)
   if (provider === 'openai') return new OpenAIMeetingIntelligence()
@@ -85,9 +96,9 @@ export function createSpeechProcessor({ mode = process.env.MEETING_PROCESSOR ?? 
 
 // `storage` defaults to in-memory so tests never touch disk; the local servers
 // pass durable SQLite storage (see server/adapters/sqlite.js).
-export async function createDevelopmentPlatform({ speechProcessor = createSpeechProcessor(), storage = createInMemoryMeetingStorage(), chatAnswerer = createChatAnswerer() } = {}) {
+export async function createDevelopmentPlatform({ speechProcessor = createSpeechProcessor(), storage = createInMemoryMeetingStorage(), chatAnswerer = createChatAnswerer(), embedder = createEmbedder() } = {}) {
   const platform = new MeetingIntelligencePlatform({
-    storage, speechProcessor, chatAnswerer,
+    storage, speechProcessor, chatAnswerer, embedder,
     policy: new PolicyEngine({ retentionPolicies: DEVELOPMENT_RETENTION_POLICIES }),
     maxRecordingBytes: LOCAL_MAX_RECORDING_BYTES,
     // The real pipeline transcribes only verified 16 kHz mono WAV.

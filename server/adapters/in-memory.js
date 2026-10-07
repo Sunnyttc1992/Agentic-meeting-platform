@@ -93,6 +93,16 @@ export class InMemoryChatRepository {
   restore(snapshot) { this.#turns = structuredClone(snapshot) }
 }
 
+// Retrieval vectors, one row per knowledge item and embedding model.
+export class InMemoryEmbeddingRepository {
+  #rows = new Map()
+  replaceMeeting(tenantId, meetingId, rows) { this.#rows.set(`${tenantId}:${meetingId}`, structuredClone(rows)) }
+  forMeeting(tenantId, meetingId) { return structuredClone(this.#rows.get(`${tenantId}:${meetingId}`) ?? []) }
+  clearMeeting(tenantId, meetingId) { this.#rows.delete(`${tenantId}:${meetingId}`) }
+  snapshot() { return structuredClone([...this.#rows.entries()]) }
+  restore(snapshot) { this.#rows = new Map(structuredClone(snapshot)) }
+}
+
 // The platform replaces a meeting's rows from canonical knowledge after every
 // publication, so replaying a job cannot create a second commitment.
 export class InMemoryCommitmentRegistry {

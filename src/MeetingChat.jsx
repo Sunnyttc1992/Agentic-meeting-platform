@@ -16,7 +16,7 @@ const KIND_LABELS = { transcript: 'Transcript', decision: 'Decision', action: 'A
 const clock = (ms) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`
 const shortDate = (iso) => iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : null
 
-export function ChatTurn({ turn }) {
+export function ChatTurn({ turn, embeddingModel = null }) {
   const note = turn.status === 'not-covered' && turn.answer ? null : STATUS_NOTES[turn.status]
   return <article className="chat-turn">
     <p className="chat-question">{turn.question}</p>
@@ -26,12 +26,14 @@ export function ChatTurn({ turn }) {
       <details><summary><span className="chat-source-label">{index + 1}</span><b>{source.meetingTitle}</b><small>{[KIND_LABELS[source.kind] ?? 'Note', Number.isFinite(source.startMs) ? clock(source.startMs) : null, shortDate(source.meetingCreatedAt)].filter(Boolean).join(' · ')}</small></summary><p>{source.text}</p></details>
     </li>)}</ol>}
     {turn.provider && turn.status === 'answered' && <small className="chat-provenance">Written by {turn.provider}{turn.model ? ` (${turn.model})` : ''} from the sources above.</small>}
+    {embeddingModel && turn.retrieval === 'keyword' && <small className="chat-provenance">Meaning-based search was unavailable for this question, so only keyword matches were used.</small>}
   </article>
 }
 
 export function MeetingChat() {
   const [turns, setTurns] = useState([])
   const [provider, setProvider] = useState(null)
+  const [embeddingModel, setEmbeddingModel] = useState(null)
   const [question, setQuestion] = useState('')
   const [asking, setAsking] = useState(false)
   const [error, setError] = useState('')
@@ -40,7 +42,7 @@ export function MeetingChat() {
 
   useEffect(() => {
     localRequest('/chat/messages')
-      .then((data) => { setTurns(data.turns ?? []); setProvider(data.provider ?? null) })
+      .then((data) => { setTurns(data.turns ?? []); setProvider(data.provider ?? null); setEmbeddingModel(data.embeddingModel ?? null) })
       .catch((cause) => setError(cause.message))
       .finally(() => setLoaded(true))
   }, [])
@@ -63,12 +65,12 @@ export function MeetingChat() {
 
   return <section className="meeting-chat" aria-label="Ask your meetings">
     <div className="meeting-list-head"><div><p className="eyebrow">ASK YOUR MEETINGS</p><h2>What was decided?</h2></div>{turns.length > 0 && <button onClick={clear}><Trash size={12}/> Clear history</button>}</div>
-    <p className="chat-disclosure">{provider
-      ? `Searches every meeting you can open. Your question, the matching excerpts, and your last few questions are sent to ${provider} to write a cited answer. Audio never leaves this computer.`
-      : 'Searches every meeting you can open and shows the matching excerpts. Written answers are off on this server (set MEETING_CHAT_PROVIDER to enable them).'}</p>
+    <p className="chat-disclosure">{embeddingModel ? `Searches every meeting you can open, by keyword and by meaning (${embeddingModel}, on this computer). ` : ''}{provider
+      ? `${embeddingModel ? '' : 'Searches every meeting you can open. '}Your question, the matching excerpts, and your last few questions are sent to ${provider} to write a cited answer. Audio never leaves this computer.`
+      : `${embeddingModel ? '' : 'Searches every meeting you can open. '}Shows the matching excerpts. Written answers are off on this server (set MEETING_CHAT_PROVIDER to enable them).`}</p>
     <div className="chat-thread" aria-live="polite">
       {loaded && turns.length === 0 && !asking && <div className="workspace-empty chat-empty"><ChatCircleText size={27}/><p>Ask about decisions, owners, risks, or open questions across your meetings.</p></div>}
-      {turns.map((turn) => <ChatTurn key={turn.id} turn={turn} />)}
+      {turns.map((turn) => <ChatTurn key={turn.id} turn={turn} embeddingModel={embeddingModel} />)}
       {asking && <p className="chat-note">Searching your meetings…</p>}
       <div ref={endRef} />
     </div>

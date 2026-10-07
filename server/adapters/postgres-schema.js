@@ -10,7 +10,7 @@ import { invariant } from '../errors.js'
 // The first migration's tables are frozen: its SQL is generated from this list
 // and must never change once applied. Later tables are added per migration.
 const V1_TENANT_TABLES = Object.freeze(['meetings', 'recordings', 'recording_content', 'transcript_segments', 'knowledge_assertions', 'commitments', 'audit_events', 'outbox_events'])
-const TENANT_TABLES = Object.freeze([...V1_TENANT_TABLES, 'chat_turns'])
+const TENANT_TABLES = Object.freeze([...V1_TENANT_TABLES, 'chat_turns', 'knowledge_embeddings'])
 const rowLevelSecurity = (table) => `
 ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;
@@ -75,6 +75,17 @@ ${V1_TENANT_TABLES.map(rowLevelSecurity).join('\n')}
 CREATE TABLE chat_turns (seq bigserial PRIMARY KEY, tenant_id text NOT NULL, user_id text NOT NULL, doc jsonb NOT NULL);
 CREATE INDEX chat_turns_by_user ON chat_turns (tenant_id, user_id, seq);
 ${rowLevelSecurity('chat_turns')}
+`,
+  }),
+  Object.freeze({
+    version: '003_knowledge_embeddings',
+    sql: `
+CREATE TABLE knowledge_embeddings (
+  tenant_id text NOT NULL, meeting_id text NOT NULL, source_id text NOT NULL, model text NOT NULL,
+  text_hash text NOT NULL, vector bytea NOT NULL,
+  PRIMARY KEY (tenant_id, meeting_id, source_id, model)
+);
+${rowLevelSecurity('knowledge_embeddings')}
 `,
   }),
 ])

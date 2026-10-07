@@ -52,6 +52,8 @@ Manual deletion and retention expiry both run `#disposeMeetingContent`. Every st
 | Per-recording audio keys (`.data/keys/recordings/` locally; `MEETING_RECORDING_KEY_DIR` with PostgreSQL) | One wrapped 256-bit key per recording | Key file overwritten and removed, so every surviving copy of that recording's ciphertext is unreadable (crypto-shredding) | `server/recording-keys.test.js`; "deleting a recording destroys its key" in the SQLite and PostgreSQL suites |
 | Transcript segments and knowledge assertions | Transcript text, summary, decisions, risks, questions, actions | Rows deleted | same |
 | Commitment registry | Derived action rows | Rows deleted | same |
+| Chat history (`chat_turns`) | Questions, answers, and source references of saved chat turns | Every turn that drew on the meeting is deleted, for every user | `server/chat.test.js`, SQLite raw-file check, PostgreSQL test |
+| Retrieval vectors (`knowledge_embeddings`) | Local `bge-m3` vectors derived from transcript and assertion text | Deleted with the meeting, and whenever its knowledge is replaced or quarantined; rebuilt lazily only for readable meetings | `server/embeddings.test.js`, SQLite and PostgreSQL tests |
 | SQLite file and write-ahead log (local mode) | Free pages and WAL frames that held deleted rows | `secure_delete` zeroes freed rows; the WAL is checkpointed and truncated after each delete commit | "deleted meeting content is not left readable in the SQLite database or its write-ahead log" |
 | Meeting record | Policy state, consent evidence, capture-stop boundaries | Kept as the deletion tombstone (`retentionState: deleted`); content-free | blocks later preflight, upload, processing, and retries |
 | Audit log and outbox | Content-free events | Kept (append-only by design) | audit tests |
@@ -62,7 +64,7 @@ Manual deletion and retention expiry both run `#disposeMeetingContent`. Every st
 | **Outside the app:** downloaded exports | Markdown files a participant saved | Cannot be recalled; the export is marked confidential and audited | `meeting.export` audit |
 | **Outside the app:** summary provider | Transcript sent for summarization | OpenAI: `store: false` (no stored-response retrieval); provider abuse-monitoring retention per contract. Anthropic: default API retention per contract. Both need the approval packets before real meetings | approval packets |
 
-There are no embeddings, vector stores, search indexes, caches, queues/dead letters, graph stores, or agent memory in the prototype. Adding any of them must add a row here and a deletion path before it ships.
+Saved chat turns (agent memory) and retrieval vectors are listed above. There are no other vector stores, search indexes, caches, queues/dead letters, or graph stores in the prototype. Adding any of them must add a row here and a deletion path before it ships.
 
 ## Retention expiry (PRIV-04, milestone implementation)
 

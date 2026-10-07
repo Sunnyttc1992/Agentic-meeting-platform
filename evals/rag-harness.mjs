@@ -11,10 +11,10 @@ import { answerMetrics, leaks, retrievalMetrics, summarize } from './rag-metrics
 
 const organizer = Object.freeze({ tenantId: ASKER.tenantId, userId: 'alex' })
 
-async function seededPlatform(chatAnswerer) {
+async function seededPlatform(chatAnswerer, embedder) {
   const platform = new MeetingIntelligencePlatform({
     storage: createInMemoryMeetingStorage(), clock: new FixedClock('2026-10-06T12:00:00Z'),
-    policy: new PolicyEngine(), chatAnswerer, authorizationTtlMs: 60_000,
+    policy: new PolicyEngine(), chatAnswerer, embedder, authorizationTtlMs: 60_000,
   })
   for (const meeting of MEETINGS) {
     await platform.createMeeting(organizer, { id: meeting.id, title: meeting.title, tenantId: ASKER.tenantId, organizerId: 'alex', participantIds: meeting.participantIds, classification: 'standard', createdAt: meeting.createdAt })
@@ -32,16 +32,16 @@ async function seededPlatform(chatAnswerer) {
 
 const restrictedMeetingIds = MEETINGS.filter((meeting) => !meeting.participantIds.includes(ASKER.userId)).map((meeting) => meeting.id)
 
-export async function runRagEvaluation({ chatAnswerer = null, questions = QUESTIONS } = {}) {
-  const retrievalPlatform = await seededPlatform(null)
-  const answerPlatform = chatAnswerer ? await seededPlatform(chatAnswerer) : null
+export async function runRagEvaluation({ chatAnswerer = null, embedder = null, questions = QUESTIONS } = {}) {
+  const retrievalPlatform = await seededPlatform(null, embedder)
+  const answerPlatform = chatAnswerer ? await seededPlatform(chatAnswerer, embedder) : null
   const rows = []
   for (const testCase of questions) {
     const retrievedTurn = (await retrievalPlatform.askChat(ASKER, { question: testCase.question })).turn
     const retrieved = retrievedTurn.sources.map((source) => `${source.meetingId}:${source.sourceId}`)
     const row = {
       id: testCase.id, category: testCase.category, question: testCase.question,
-      retrieved, retrieval: retrievalMetrics(retrieved, testCase.relevant),
+      retrieved, retrievalMode: retrievedTurn.retrieval, retrieval: retrievalMetrics(retrieved, testCase.relevant),
       leaked: leaks(retrievedTurn, { canary: CANARY, restrictedMeetingIds }),
     }
     if (answerPlatform) {

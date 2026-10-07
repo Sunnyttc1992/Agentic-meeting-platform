@@ -39,6 +39,7 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete BEFORE DELETE ON audit_event
 CREATE TABLE IF NOT EXISTS outbox (tenant_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant_id, idempotency_key));
 CREATE TABLE IF NOT EXISTS chat_turns (seq INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, doc TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS chat_turns_by_user ON chat_turns (tenant_id, user_id, seq);
+CREATE TABLE IF NOT EXISTS knowledge_embeddings (tenant_id TEXT NOT NULL, meeting_id TEXT NOT NULL, source_id TEXT NOT NULL, model TEXT NOT NULL, text_hash TEXT NOT NULL, vector BLOB NOT NULL, PRIMARY KEY (tenant_id, meeting_id, source_id, model));
 `
 
 const parse = (row) => (row ? JSON.parse(row.doc) : null)
@@ -183,6 +184,22 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
     },
   }
 
+  const toBytes = (vector) => Buffer.from(Float32Array.from(vector).buffer)
+  const fromBytes = (bytes) => Array.from(new Float32Array(Uint8Array.from(bytes).buffer))
+  const embeddings = {
+    forMeeting: (tenantId, meetingId) => sql('SELECT source_id, model, text_hash, vector FROM knowledge_embeddings WHERE tenant_id = ? AND meeting_id = ?').all(tenantId, meetingId)
+      .map((row) => ({ tenantId, meetingId, sourceId: row.source_id, model: row.model, textHash: row.text_hash, vector: fromBytes(row.vector) })),
+    replaceMeeting(tenantId, meetingId, rows) {
+      sql('DELETE FROM knowledge_embeddings WHERE tenant_id = ? AND meeting_id = ?').run(tenantId, meetingId)
+      const insert = sql('INSERT INTO knowledge_embeddings (tenant_id, meeting_id, source_id, model, text_hash, vector) VALUES (?, ?, ?, ?, ?, ?)')
+      for (const row of rows) insert.run(tenantId, meetingId, row.sourceId, row.model, row.textHash, toBytes(row.vector))
+    },
+    clearMeeting(tenantId, meetingId) {
+      sql('DELETE FROM knowledge_embeddings WHERE tenant_id = ? AND meeting_id = ?').run(tenantId, meetingId)
+      purgeDeletedContent()
+    },
+  }
+
   const outbox = {
     enqueue(scope, event) {
       const stored = canonicalOutboxEvent(scope, event)
@@ -216,7 +233,7 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
 
   const storage = composeRepositoryStorage({
     kind: 'local-sqlite',
-    repositories: { meetings, knowledge, recordings, audit, commitments, outbox, chat },
+    repositories: { meetings, knowledge, recordings, audit, commitments, outbox, chat, embeddings },
     runAtomically,
   })
   return Object.freeze({ storage, close: () => db.close() })

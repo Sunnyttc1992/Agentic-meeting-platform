@@ -142,7 +142,7 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 | AUTH-04 | done | PostgreSQL RLS tenant isolation | Object store, when added |
 | AUTH-05 | done | Sealed tenant facades; RLS | Static checks |
 | AUTH-06 | partial | Cross-meeting recording IDs look nonexistent; citations never point into an unreadable meeting; regeneration is organizer-only (`server/revocation.test.js`) | Redaction and topic-level restriction (needs a product decision) |
-| AUTH-07 | partial | Tenant-isolated, authorization-filtered bounded lexical retrieval; `npm run eval:rag` measures it (recall 0.76, paraphrase recall 0.47, leaks 0) | No vector index; deletion/backup lifecycle for future embeddings |
+| AUTH-07 | done | Hybrid retrieval with local bge-m3 vectors: authorized before any read, tenant RLS on `knowledge_embeddings`, vectors deleted with or rebuilt after knowledge changes; `npm run eval:rag` recall 0.95, paraphrase recall 0.90, leaks 0 | Backup-retention review for vectors; pgvector at scale |
 | AUTH-08 | done | none | none at M |
 | AUTH-09 | partial | Least-privilege DB role | Workload identities |
 | AUTH-10 | partial | Rate limits, strict schemas | Token authentication (Entra deferred) |
