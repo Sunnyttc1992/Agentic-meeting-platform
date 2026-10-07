@@ -1838,7 +1838,7 @@ export class MeetingIntelligencePlatform {
       // A source whose content was replaced or removed is simply not shown.
       sources: Object.freeze(turn.sources.map((source) => {
         const resolved = sources.get(`${source.meetingId}:${source.sourceId}`)
-        return resolved ? Object.freeze({ label: source.label, meetingId: resolved.meetingId, meetingTitle: resolved.meetingTitle, meetingCreatedAt: resolved.meetingCreatedAt, kind: resolved.kind, startMs: resolved.startMs, text: resolved.text }) : null
+        return resolved ? Object.freeze({ label: source.label, meetingId: resolved.meetingId, sourceId: resolved.sourceId, meetingTitle: resolved.meetingTitle, meetingCreatedAt: resolved.meetingCreatedAt, kind: resolved.kind, startMs: resolved.startMs, text: resolved.text }) : null
       }).filter(Boolean)),
     })
   }
