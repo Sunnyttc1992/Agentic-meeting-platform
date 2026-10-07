@@ -6,7 +6,7 @@
 // DATABASE_URL in its environment (use run-studio-browser-smoke.ps1), never at
 // a server holding real meetings.
 import { spawn } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -21,7 +21,8 @@ const chrome = spawn(CHROME, [
   '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
   '--no-first-run', '--no-default-browser-check', '--window-size=1440,1000', 'about:blank',
 ], { stdio: 'ignore' })
-process.once('exit', () => chrome.kill())
+// The throwaway Chrome profile is deleted on exit, or runs accumulate them in TEMP.
+process.once('exit', () => { chrome.kill(); try { rmSync(profile, { recursive: true, force: true, maxRetries: 3 }) } catch { /* Chrome may still hold a file briefly */ } })
 
 let target
 for (let i = 0; i < 40 && !target; i += 1) {

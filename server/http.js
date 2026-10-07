@@ -182,6 +182,16 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
         return json(response, 200, await platform.askChat(principalFrom(request), body, correlationId))
       }
       if (url.pathname === '/chat/messages' && request.method === 'DELETE') return json(response, 200, await platform.clearChatHistory(principalFrom(request), correlationId))
+      const speakerMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings\/([^/]+)\/speakers\/([^/]+)$/)
+      if (speakerMatch && request.method === 'PUT') {
+        const body = await readJson(request)
+        strictObject(body, ['participantId', 'version'], ['participantId'])
+        return json(response, 200, await platform.setSpeaker(principalFrom(request), speakerMatch[1], speakerMatch[2], speakerMatch[3], body, correlationId))
+      }
+      if (speakerMatch && request.method === 'DELETE') {
+        const version = url.searchParams.get('version')
+        return json(response, 200, await platform.removeSpeaker(principalFrom(request), speakerMatch[1], speakerMatch[2], speakerMatch[3], version === null ? {} : { version: Number(version) }, correlationId))
+      }
       const chatTurnMatch = url.pathname.match(/^\/chat\/messages\/([^/]+)$/)
       if (chatTurnMatch && request.method === 'DELETE') return json(response, 200, await platform.deleteChatTurn(principalFrom(request), chatTurnMatch[1], correlationId))
       if (request.method === 'GET' && recordingsMatch) return json(response, 200, await platform.listRecordings(principalFrom(request), recordingsMatch[1], correlationId))

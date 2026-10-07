@@ -37,7 +37,7 @@ Meeting chat (`server/chat.js`, `askChat` in `server/platform.js`) is a separate
 | Sent | Never sent |
 | --- | --- |
 | The question (at most 1,000 characters) | Audio, voice data, or raw diarization labels |
-| Up to 12 excerpts (each at most 400 characters) from meetings the asker may read at that moment, each labelled `E1`, `E2`, ... with an anonymous meeting letter, the meeting date, and its kind (transcript line with time and anonymous speaker label, or decision, action, risk, question, summary) | Tenant, meeting, recording, segment, or assertion IDs; meeting titles; participant names |
+| Up to 12 excerpts (each at most 400 characters) from meetings the asker may read at that moment, each labelled `E1`, `E2`, ... with an anonymous meeting letter, the meeting date, and its kind (transcript line with time and speaker, or decision, action, risk, question, summary). The speaker is an anonymous label unless a meeting participant confirmed it, in which case it is that participant's ID marked `(confirmed)` (user decision 2026-10-07) | Tenant, meeting, recording, segment, or assertion IDs; meeting titles; unconfirmed speaker identities |
 | Up to 4 recent and up to 2 related older question-and-answer pairs from the same user's saved chat (related turns are chosen locally by embedding similarity), only while that user can still read every meeting they drew on and only within the chat retention period | Excerpts from meetings the asker cannot read, other users' chats, consent, audit, or keys |
 | Instructions and a strict JSON output schema | Browser-held secrets |
 

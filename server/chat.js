@@ -52,7 +52,7 @@ Rules:
 - Answer only from the excerpts. Do not use outside knowledge about the organization or its people. If the excerpts do not answer the question, set answered to false and say in one sentence that the meetings provided do not cover it.
 - Cite the label (such as "E2") of every excerpt that supports your answer. Cite only labels that appear in the excerpts.
 - Each excerpt names an anonymous meeting letter and date. Refer to a meeting that way, for example "the meeting on 2026-10-06"; never guess a meeting's name or subject beyond what the excerpts say.
-- Speaker labels such as SPEAKER_00 are anonymous voices, not people. Never treat a label as a name.
+- Speaker labels such as SPEAKER_00 are anonymous voices, not people. Never treat a label as a name. A speaker written as a participant ID followed by (confirmed), such as "sam (confirmed)", was confirmed by a meeting participant: you may say that person said it, but being the speaker does not make them a task owner.
 - State an owner or a due date only when an excerpt states it. Say when excerpts disagree, and prefer the most recent meeting.
 - Keep the answer under 150 words: plain sentences, or a short list when several items answer the question.`
 

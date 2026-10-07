@@ -97,6 +97,7 @@ const SAFE_AUDIT_ACTIONS = new Set([
   'recording.process', 'recording.process.retry', 'recording.process.complete', 'recording.status', 'recording.delete',
   'recording.authorization.status', 'recording.list',
   'chat.ask', 'chat.history.read', 'chat.history.clear', 'chat.guardrail', 'chat.turn.delete', 'chat.history.expire',
+  'speaker.map', 'speaker.unmap', 'speaker.dispute',
   'transcript.append', 'knowledge.assertions.add', 'knowledge.read', 'knowledge.search',
   'ai.retrieve', 'privacy-access.read', 'meeting.export', 'retention.expire',
   'commitment.query',
@@ -138,6 +139,45 @@ const view = (recording) => ({
     && (recording.processingAttempts ?? 1) < MAX_PROCESSING_ATTEMPTS && !recording.contentClearedAt,
   error: recording.error ?? null,
 })
+
+// Speaker naming (CAP-05). A person confirms which meeting participant an
+// anonymous diarization label is, separately for each recording (SPEAKER_00 in
+// one recording is unrelated to SPEAKER_00 in another). The map is versioned,
+// keeps its change history, and is applied whenever content is read, so the
+// stored transcript and generated items never change. A name whose
+// participant has left the meeting is ignored.
+const SPEAKER_MAP_LABEL = /^SPEAKER_\d{2}$/
+const MAX_SPEAKER_HISTORY = 200
+
+function speakerMapOf(recording) {
+  const map = recording?.speakerMap
+  return {
+    version: Number.isSafeInteger(map?.version) ? map.version : 0,
+    labels: map?.labels && typeof map.labels === 'object' ? structuredClone(map.labels) : {},
+    disputed: Array.isArray(map?.disputed) ? structuredClone(map.disputed) : [],
+    history: Array.isArray(map?.history) ? structuredClone(map.history) : [],
+  }
+}
+
+function speakerFor(maps, participantIds, recordingId, label) {
+  const entry = maps.get(recordingId)?.labels?.[label]
+  return entry && participantIds.includes(entry.participantId) ? Object.freeze({ participantId: entry.participantId, method: entry.method }) : null
+}
+
+// Adds the confirmed speaker to transcript segments and to the speaker of an
+// action, for display. Owners are never derived from it.
+function withSpeakerNames({ segments = [], assertions = [] }, maps, participantIds) {
+  return {
+    segments: segments.map((segment) => {
+      const speaker = speakerFor(maps, participantIds, segment?.provenance?.recordingId, segment?.diarizationLabel)
+      return speaker ? { ...segment, speaker } : segment
+    }),
+    assertions: assertions.map((assertion) => {
+      const speaker = assertion?.commitment?.speakerLabel ? speakerFor(maps, participantIds, assertion?.provenance?.recordingId, assertion.commitment.speakerLabel) : null
+      return speaker ? { ...assertion, commitment: { ...assertion.commitment, speaker } } : assertion
+    }),
+  }
+}
 
 // A meeting may hold several recordings: a stopped capture needs a fresh
 // preflight. A recording owns the segments whose canonical provenance names it
@@ -1422,9 +1462,105 @@ export class MeetingIntelligencePlatform {
       this.policy.require(this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() }))
       const recording = (await this.#recording(actor, meetingId, recordingId))
       const output = { recording: view(recording) }
-      if (recording.state === 'completed') Object.assign(output, knowledgeForRecording((await this.knowledge.forMeeting(actor.tenantId, meetingId)), recording.id))
+      if (recording.state === 'completed') {
+        const own = knowledgeForRecording((await this.knowledge.forMeeting(actor.tenantId, meetingId)), recording.id)
+        Object.assign(output, withSpeakerNames(own, new Map([[recording.id, speakerMapOf(recording)]]), meetingRecord.participantIds))
+        output.speakers = this.#speakersView(actor, meetingRecord, recording, own.segments)
+      }
       return output
     }, recordingId))
+  }
+
+  // Names a speaker. The organizer may name or correct any label; any other
+  // participant may claim only an unnamed label, and only as themselves. A
+  // pair the named person disputed can be restored only by that person.
+  async setSpeaker(input, meetingId, recordingId, label, body, correlationId = randomUUID()) {
+    const actor = principal(input)
+    return (await this.#audited(actor, correlationId, 'speaker.map', meetingId, async () => {
+      const { meetingRecord, recording, segments } = await this.#speakerContext(actor, meetingId, recordingId, label)
+      const participantId = body?.participantId
+      invariant(typeof participantId === 'string' && meetingRecord.participantIds.includes(participantId), 'SPEAKER_NOT_PARTICIPANT', 'A speaker can only be named as one of the meeting participants', 400)
+      const map = speakerMapOf(recording)
+      invariant(body?.version === undefined || body.version === map.version, 'SPEAKER_MAP_CHANGED', 'Someone else changed the speakers; reload and try again', 409)
+      const current = map.labels[label] ?? null
+      let method
+      if (meetingRecord.organizerId === actor.userId) {
+        const disputed = map.disputed.some((item) => item.label === label && item.participantId === participantId)
+        invariant(!disputed || participantId === actor.userId, 'SPEAKER_DISPUTED', 'This person removed this attribution; only they can claim it again', 409)
+        method = 'organizer'
+      } else {
+        invariant(participantId === actor.userId, 'SPEAKER_CLAIM_FORBIDDEN', 'A participant can only claim a speaker as themselves', 403)
+        invariant(!current, 'SPEAKER_ALREADY_NAMED', 'This speaker is already named; ask the organizer to correct it', 409)
+        method = 'self-claim'
+        map.disputed = map.disputed.filter((item) => !(item.label === label && item.participantId === participantId))
+      }
+      const at = this.clock.now().toISOString()
+      map.labels[label] = { participantId, method, by: actor.userId, at }
+      map.version += 1
+      map.history = [...map.history, { version: map.version, label, from: current?.participantId ?? null, to: participantId, by: actor.userId, method, at }].slice(-MAX_SPEAKER_HISTORY)
+      recording.speakerMap = map
+      await this.recordings.save(recording)
+      return this.#speakersView(actor, meetingRecord, recording, segments)
+    }, recordingId))
+  }
+
+  // Removes a name. The organizer's removal is a correction; the named
+  // participant's removal is a dispute, which also stops the organizer from
+  // assigning that same label to them again.
+  async removeSpeaker(input, meetingId, recordingId, label, body = {}, correlationId = randomUUID()) {
+    const actor = principal(input)
+    const meetingRecord = await this.#meeting(actor.tenantId, meetingId)
+    const action = meetingRecord.organizerId === actor.userId ? 'speaker.unmap' : 'speaker.dispute'
+    return (await this.#audited(actor, correlationId, action, meetingId, async () => {
+      const { meetingRecord: current, recording, segments } = await this.#speakerContext(actor, meetingId, recordingId, label)
+      const map = speakerMapOf(recording)
+      invariant(body?.version === undefined || body.version === map.version, 'SPEAKER_MAP_CHANGED', 'Someone else changed the speakers; reload and try again', 409)
+      const entry = map.labels[label]
+      invariant(entry, 'SPEAKER_NOT_NAMED', 'This speaker is not named', 404)
+      const organizer = current.organizerId === actor.userId
+      invariant(organizer || entry.participantId === actor.userId, 'SPEAKER_CHANGE_FORBIDDEN', 'Only the organizer or the named person can remove this name', 403)
+      delete map.labels[label]
+      if (!organizer) map.disputed = [...map.disputed.filter((item) => !(item.label === label && item.participantId === actor.userId)), { label, participantId: actor.userId }]
+      const at = this.clock.now().toISOString()
+      map.version += 1
+      map.history = [...map.history, { version: map.version, label, from: entry.participantId, to: null, by: actor.userId, method: organizer ? 'organizer' : 'disputed', at }].slice(-MAX_SPEAKER_HISTORY)
+      recording.speakerMap = map
+      await this.recordings.save(recording)
+      return this.#speakersView(actor, current, recording, segments)
+    }, recordingId))
+  }
+
+  async #speakerContext(actor, meetingId, recordingId, label) {
+    const meetingRecord = await this.#meeting(actor.tenantId, meetingId)
+    this.policy.require(this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() }))
+    // Readers through a management grant can see names but never set them.
+    invariant(meetingRecord.participantIds.includes(actor.userId) || meetingRecord.organizerId === actor.userId, 'SPEAKER_CHANGE_FORBIDDEN', 'Only meeting participants can name speakers', 403)
+    const recording = await this.#recording(actor, meetingId, recordingId)
+    invariant(recording.state === 'completed', 'RECORDING_NOT_COMPLETED', 'Speakers can be named once the recording is processed', 409)
+    const { segments } = knowledgeForRecording(await this.knowledge.forMeeting(actor.tenantId, meetingId), recording.id)
+    invariant(typeof label === 'string' && SPEAKER_MAP_LABEL.test(label) && segments.some((segment) => segment.diarizationLabel === label), 'SPEAKER_NOT_FOUND', 'This recording has no such speaker', 404)
+    return { meetingRecord, recording, segments }
+  }
+
+  #speakersView(actor, meetingRecord, recording, segments) {
+    const map = speakerMapOf(recording)
+    const counts = new Map()
+    for (const segment of segments) if (SPEAKER_MAP_LABEL.test(segment.diarizationLabel ?? '')) counts.set(segment.diarizationLabel, (counts.get(segment.diarizationLabel) ?? 0) + 1)
+    return Object.freeze({
+      version: map.version,
+      viewer: Object.freeze({ userId: actor.userId, isOrganizer: meetingRecord.organizerId === actor.userId, canName: meetingRecord.participantIds.includes(actor.userId) || meetingRecord.organizerId === actor.userId }),
+      participants: Object.freeze([...meetingRecord.participantIds]),
+      labels: Object.freeze([...counts].sort(([a], [b]) => a.localeCompare(b)).map(([label, lines]) => {
+        const entry = map.labels[label]
+        const named = entry && meetingRecord.participantIds.includes(entry.participantId) ? entry : null
+        return Object.freeze({ label, lines, participantId: named?.participantId ?? null, method: named?.method ?? null, by: named?.by ?? null, at: named?.at ?? null, disputedBy: map.disputed.filter((item) => item.label === label).map((item) => item.participantId) })
+      })),
+      history: Object.freeze(map.history.slice(-10).reverse()),
+    })
+  }
+
+  async #speakerMaps(tenantId, meetingId) {
+    return new Map(((await this.recordings?.listForMeeting(tenantId, meetingId)) ?? []).map((record) => [record.id, speakerMapOf(record)]))
   }
 
   async deleteMeetingContent(input, meetingId, correlationId = randomUUID()) {
@@ -1612,7 +1748,7 @@ export class MeetingIntelligencePlatform {
     return (await this.#audited(actor, correlationId, 'knowledge.read', meetingId, async () => {
       const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       this.policy.require(this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() }))
-      return { meeting: meetingRecord, ...(await this.knowledge.forMeeting(actor.tenantId, meetingId)) }
+      return { meeting: meetingRecord, ...withSpeakerNames(await this.knowledge.forMeeting(actor.tenantId, meetingId), await this.#speakerMaps(actor.tenantId, meetingId), meetingRecord.participantIds) }
     }))
   }
 
@@ -1624,7 +1760,7 @@ export class MeetingIntelligencePlatform {
     return (await this.#audited(actor, correlationId, 'meeting.export', meetingId, async () => {
       const meetingRecord = (await this.#meeting(actor.tenantId, meetingId))
       this.policy.require(this.policy.meetingExport({ principal: actor, meeting: meetingRecord, now: this.clock.now() }))
-      const { segments, assertions } = (await this.knowledge.forMeeting(actor.tenantId, meetingId))
+      const { segments, assertions } = withSpeakerNames(await this.knowledge.forMeeting(actor.tenantId, meetingId), await this.#speakerMaps(actor.tenantId, meetingId), meetingRecord.participantIds)
       invariant(segments.length > 0 || assertions.length > 0, 'NO_MEETING_RECORD', 'This meeting has no processed record to export yet', 409)
       const completed = ((await this.recordings?.listForMeeting(actor.tenantId, meetingId)) ?? []).filter((item) => item.state === 'completed')
       return Object.freeze({
@@ -1831,7 +1967,7 @@ export class MeetingIntelligencePlatform {
       const recent = turns.slice(-MAX_CHAT_DISPLAY_TURNS)
       const sources = new Map()
       for (const meetingId of new Set(recent.flatMap((turn) => turn.sources.map((source) => source.meetingId)))) {
-        const knowledge = await this.knowledge.forMeeting(actor.tenantId, meetingId)
+        const knowledge = withSpeakerNames(await this.knowledge.forMeeting(actor.tenantId, meetingId), await this.#speakerMaps(actor.tenantId, meetingId), meetings.get(meetingId)?.participantIds ?? [])
         for (const item of [...(knowledge.segments ?? []), ...(knowledge.assertions ?? [])]) {
           sources.set(`${meetingId}:${item.id}`, this.#chatSource(meetings.get(meetingId), item))
         }
@@ -1905,7 +2041,7 @@ export class MeetingIntelligencePlatform {
       }
       await this.#audit({ correlationId, principal: actor, action: 'ai.retrieve', meetingId, outcome: 'allowed', reason: null })
       read += 1
-      const knowledge = await this.knowledge.forMeeting(actor.tenantId, meetingId)
+      const knowledge = withSpeakerNames(await this.knowledge.forMeeting(actor.tenantId, meetingId), await this.#speakerMaps(actor.tenantId, meetingId), meetingRecord.participantIds)
       const items = [...(knowledge.segments ?? []), ...(knowledge.assertions ?? []).filter((item) => isBoundedKnowledgeCitationList(item?.citations))]
         .filter((item) => typeof item?.id === 'string' && typeof item?.text === 'string' && item.text.trim())
       let vectors = null
@@ -1940,7 +2076,9 @@ export class MeetingIntelligencePlatform {
         prompt: {
           label, meetingLetter: letters.get(meetingRecord.id), meetingDate: source.meetingDate ?? 'date unknown', kind: source.kind,
           at: Number.isFinite(source.startMs) ? formatChatTime(source.startMs) : null,
-          speaker: source.kind === 'transcript' ? (/^SPEAKER_\d{2}$/.test(item.diarizationLabel ?? '') ? item.diarizationLabel : 'unattributed') : null,
+          // A confirmed speaker is sent by participant ID (user decision
+          // 2026-10-07); an unconfirmed label stays anonymous.
+          speaker: source.kind === 'transcript' ? (item.speaker ? `${item.speaker.participantId} (confirmed)` : /^SPEAKER_\d{2}$/.test(item.diarizationLabel ?? '') ? item.diarizationLabel : 'unattributed') : null,
           text: source.text,
         },
       }
@@ -1984,6 +2122,7 @@ export class MeetingIntelligencePlatform {
       meetingCreatedAt: typeof meetingRecord.createdAt === 'string' ? meetingRecord.createdAt : null,
       kind: isSegment ? 'transcript' : item.kind,
       startMs: isSegment && Number.isFinite(item.startMs) ? item.startMs : null,
+      speaker: isSegment ? (item.speaker?.participantId ?? null) : null,
       text: text.length > MAX_CHAT_EXCERPT_TEXT ? `${text.slice(0, MAX_CHAT_EXCERPT_TEXT - 1)}…` : text,
     }
   }
@@ -1997,7 +2136,7 @@ export class MeetingIntelligencePlatform {
       // A source whose content was replaced or removed is simply not shown.
       sources: Object.freeze(turn.sources.map((source) => {
         const resolved = sources.get(`${source.meetingId}:${source.sourceId}`)
-        return resolved ? Object.freeze({ label: source.label, meetingId: resolved.meetingId, sourceId: resolved.sourceId, meetingTitle: resolved.meetingTitle, meetingCreatedAt: resolved.meetingCreatedAt, kind: resolved.kind, startMs: resolved.startMs, text: resolved.text }) : null
+        return resolved ? Object.freeze({ label: source.label, meetingId: resolved.meetingId, sourceId: resolved.sourceId, meetingTitle: resolved.meetingTitle, meetingCreatedAt: resolved.meetingCreatedAt, speaker: resolved.speaker ?? null, kind: resolved.kind, startMs: resolved.startMs, text: resolved.text }) : null
       }).filter(Boolean)),
     })
   }

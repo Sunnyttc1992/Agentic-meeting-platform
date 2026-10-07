@@ -53,7 +53,7 @@ export function renderMeetingRecordMarkdown({ meeting, segments = [], assertions
     `- Participants: ${meeting.participantIds.map(escapeMarkdownText).join(', ')}`,
     `- Processed by: ${escapeMarkdownText(processor ?? 'Not recorded')}`,
     ...(summaryModel ? [`- Summary model: ${escapeMarkdownText(summaryModel)}`] : []),
-    '- Speakers are not identified; speaker labels are anonymous and unverified. Owners and due dates appear only where they were stated in the meeting.',
+    '- Speaker names appear only where a meeting participant confirmed them (marked confirmed); other speaker labels are anonymous. Owners and due dates appear only where they were stated in the meeting.',
     '',
   ]
 
@@ -82,7 +82,7 @@ export function renderMeetingRecordMarkdown({ meeting, segments = [], assertions
   if (segments.length) {
     lines.push('## Transcript', '')
     for (const segment of segments) {
-      const speaker = segment.diarizationLabel === 'UNATTRIBUTED' ? 'Speaker not identified' : escapeMarkdownText(segment.verifiedParticipantId ?? segment.diarizationLabel ?? 'Unknown speaker')
+      const speaker = segment.speaker ? `${escapeMarkdownText(segment.speaker.participantId)} (confirmed)` : segment.diarizationLabel === 'UNATTRIBUTED' ? 'Speaker not identified' : escapeMarkdownText(segment.verifiedParticipantId ?? segment.diarizationLabel ?? 'Unknown speaker')
       lines.push(`- **${timestamp(segment.startMs)}** ${speaker}: ${escapeMarkdownText(segment.text)}`)
     }
     lines.push('')

@@ -130,7 +130,7 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 | CAP-02 | done | Studio polls minimal authorization status every 5 seconds and discards on revocation | Measured remote-device latency |
 | CAP-03 | partial | none | Teams connector intentionally unconnected |
 | CAP-04 | partial | `npm run benchmark:diarization`: 26 synthetic segments across clean turns, crosstalk, interjections, silences, and rapid exchange; 0 credited to the wrong voice, all crosstalk abstained | Real-audio quality benchmark |
-| CAP-05 | partial | none | Reviewed, versioned human correction flow |
+| CAP-05 | done | Per-recording speaker naming by the organizer or by self-claim, versioned with history, disputable by the named person, roster-checked, never automatic, propagated at read time to transcript, knowledge, export, chat, and action speakers (`server/speakers.test.js`); live pyannote run on a two-voice recording | Summaries written before naming keep anonymous labels (no regeneration) |
 | CAP-06 | done | Real local Whisper runs; `npm run benchmark:real-audio` scores word error rate against a read script (2.2% on a synthetic two-voice reading; window-boundary duplicates removed) | Load and failure tests; a human-voice recording |
 | CAP-07 | done | PostgreSQL storage, migrations, RLS tests | none at M |
 | CAP-08 | done | One live OpenAI synthetic run | Evaluation set; approval packets |

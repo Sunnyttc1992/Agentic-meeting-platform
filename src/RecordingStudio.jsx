@@ -120,6 +120,7 @@ const participantName = (id, participants = DEFAULT_PARTICIPANTS) => participant
 // anonymous label of the speaker who took the task on, marked unverified.
 const actionOwner = (commitment, participants) => commitment?.ownerId
   ? participantName(commitment.ownerId, participants)
+  : commitment?.speaker ? `Unassigned · said by ${participantName(commitment.speaker.participantId, participants)}`
   : commitment?.speakerLabel ? `${commitment.speakerLabel} · unverified` : "Unassigned"
 const AGREEMENT_LABELS = { committed: "Committed", proposed: "Proposed" }
 const dueDate = (iso) => iso ? new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }) : "Not stated"
@@ -145,7 +146,51 @@ export function MeetingRecordingsList({ recordings, currentRecordingId = null, v
 
 // Every generated item shows the transcript moments it cites. Items the
 // platform could not tie to this transcript were withheld before storage.
-export function MeetingIntelligenceResult({ result, onDownload = null, participants = DEFAULT_PARTICIPANTS }) {
+const speakerHistoryLine = (change, participants) => change
+  ? `${participantName(change.by, participants)} ${change.to ? `named ${change.label} as ${participantName(change.to, participants)}` : `removed the name from ${change.label}`}${change.method === "disputed" ? " (disputed)" : ""} · ${new Date(change.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
+  : null
+
+// Speaker naming (per recording). Labels are anonymous until a participant
+// confirms them: the organizer names or corrects any label, anyone else can
+// claim an unnamed label as themselves, and the named person can dispute it.
+export function SpeakerPanel({ speakers, meetingId, recordingId, participants = DEFAULT_PARTICIPANTS, onChanged = null }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  if (!speakers?.labels?.length || !recordingId) return null
+  const viewer = speakers.viewer
+  const change = async (label, participantId) => {
+    setBusy(true); setError("")
+    try {
+      const base = `/meetings/${meetingId}/recordings/${recordingId}/speakers/${label}`
+      const response = participantId
+        ? await fetch(base, { method: "PUT", headers: { ...authHeaders(), "content-type": "application/json" }, body: JSON.stringify({ participantId, version: speakers.version }) })
+        : await fetch(`${base}?version=${speakers.version}`, { method: "DELETE", headers: authHeaders() })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body?.error?.message ?? "The change could not be saved.")
+      const refreshed = await fetch(`/meetings/${meetingId}/recordings/${recordingId}`, { headers: authHeaders() })
+      if (refreshed.ok) onChanged?.(await refreshed.json())
+    } catch (cause) { setError(cause.message) } finally { setBusy(false) }
+  }
+  return <section className="speaker-panel" aria-label="Who spoke"><span>Who spoke</span>
+    <p className="speaker-panel-note">Speaker labels come from voice similarity and stay anonymous until a participant confirms them. Confirmed names appear in the transcript, exports, and chat, and are sent with chat questions. They never change who owns an action.</p>
+    <div className="speaker-rows">{speakers.labels.map((item) => <div className="speaker-row" key={item.label}>
+      <div><b>{item.label}</b><small>{item.lines} {item.lines === 1 ? "line" : "lines"}{item.participantId ? ` · ${item.method === "self-claim" ? "self-identified" : "confirmed by organizer"}` : ""}</small></div>
+      <div className="speaker-control">{viewer.isOrganizer
+        ? <select value={item.participantId ?? ""} disabled={busy} onChange={(event) => change(item.label, event.target.value || null)} aria-label={`Who is ${item.label}`}>
+            <option value="">Not named</option>
+            {speakers.participants.map((id) => <option key={id} value={id} disabled={item.disputedBy.includes(id) && id !== viewer.userId}>{participantName(id, participants)}{item.disputedBy.includes(id) ? " (disputed)" : ""}</option>)}
+          </select>
+        : item.participantId === viewer.userId ? <><span>You</span><button disabled={busy} onClick={() => change(item.label, null)}>Not me</button></>
+        : item.participantId ? <span>{participantName(item.participantId, participants)}</span>
+        : viewer.canName ? <button disabled={busy} onClick={() => change(item.label, viewer.userId)}>That's me</button>
+        : <span>Not named</span>}</div>
+    </div>)}</div>
+    {speakers.history?.[0] && <small className="speaker-history">Last change: {speakerHistoryLine(speakers.history[0], participants)}</small>}
+    {error && <p className="intelligence-note">{error}</p>}
+  </section>
+}
+
+export function MeetingIntelligenceResult({ result, onDownload = null, participants = DEFAULT_PARTICIPANTS, meetingId = null, onChanged = null }) {
   const segments = result?.segments ?? []
   const assertions = result?.assertions ?? []
   const mode = segments[0]?.provenance?.mode ?? assertions[0]?.provenance?.mode
@@ -173,7 +218,8 @@ export function MeetingIntelligenceResult({ result, onDownload = null, participa
       <small className="action-plan-note">Committed means someone agreed to the task; proposed means it was suggested but nobody took it on. Owners and due dates appear only when stated in the meeting. Speaker labels are anonymous and unverified.</small>
     </section>}
     {[["decision", "Decisions"], ["risk", "Risks & blockers"], ["question", "Open questions"], ["finding", "Findings"]].map(([kind, title]) => ofKind(kind).length > 0 && <div className="assertion-list" key={kind}>{ofKind(kind).map((assertion) => <article key={assertion.id}><span>{title}</span><b>{assertion.text}</b><small>Sources {sources(assertion.citations)}</small></article>)}</div>)}
-    {segments.length > 0 && <details className="transcript-details" open={assertions.length === 0}><summary>Transcript · {segments.length} segments</summary><div className="speaker-timeline">{segments.map((segment) => <article key={segment.id}><time>{displayTime(Math.floor(segment.startMs / 1000))}</time><div><b>{segment.diarizationLabel === "UNATTRIBUTED" ? "Speaker not identified" : `${segment.diarizationLabel} · ${segment.verifiedParticipantId ?? "Unverified speaker"}`}</b>{Number.isFinite(segment.identityConfidence) && <small>Identity confidence {Math.round(segment.identityConfidence * 100)}% · {segment.provenance.mode}</small>}<p>{segment.text}</p></div></article>)}</div></details>}
+    {meetingId && <SpeakerPanel speakers={result?.speakers} meetingId={meetingId} recordingId={result?.recording?.id} participants={participants} onChanged={onChanged} />}
+    {segments.length > 0 && <details className="transcript-details" open={assertions.length === 0}><summary>Transcript · {segments.length} segments</summary><div className="speaker-timeline">{segments.map((segment) => <article key={segment.id}><time>{displayTime(Math.floor(segment.startMs / 1000))}</time><div><b>{segment.speaker ? `${participantName(segment.speaker.participantId, participants)} · ${segment.speaker.method === "self-claim" ? "self-identified" : "confirmed"}` : segment.diarizationLabel === "UNATTRIBUTED" ? "Speaker not identified" : `${segment.diarizationLabel} · ${segment.verifiedParticipantId ?? "Unverified speaker"}`}</b>{Number.isFinite(segment.identityConfidence) && <small>Identity confidence {Math.round(segment.identityConfidence * 100)}% · {segment.provenance.mode}</small>}<p>{segment.text}</p></div></article>)}</div></details>}
   </div>
 }
 
@@ -512,7 +558,7 @@ export function RecordingStudio({ onBack, meeting = { id: DEFAULT_MEETING_ID, ti
         {state.phase === "recording" && <div className="live-stage" data-capture-source={mockMode ? "synthetic-fixture" : "microphone"}><div className="live-pulse"><i /><span>{mockMode ? "SYNTHETIC TEST ACTIVE" : "RECORDING ACTIVE"}</span></div><div className="elapsed">{displayTime(elapsed)}</div><div className="signal" aria-label={mockMode ? "Synthetic fixture progress; no microphone input or audio" : "Microphone input active"} aria-hidden={mockMode ? "true" : undefined}>{[1,2,3,4,5,6,7,8,9,10,11,12].map((bar) => <i key={bar} style={{"--bar": `${20 + ((bar * 23) % 70)}%`}} />)}</div><CaptureTruthfulCopy mode={mockMode ? "synthetic" : "real"} phase="recording" /><button className="stop-button" onClick={userStop}><Stop size={18} weight="fill" /> {mockMode ? "Stop synthetic fixture" : "Stop recording"}</button></div>}
         {state.phase === "stopped" && <div className="center-state" data-capture-source={fixtureMode ? "synthetic-fixture" : "microphone"}><Check size={38} /><p className="stage-index">{fixtureMode ? "SYNTHETIC TEST COMPLETE" : "CAPTURE COMPLETE"}</p><h2>{fixtureMode ? "Synthetic fixture complete." : "Audio preserved locally."}</h2><CaptureTruthfulCopy mode={fixtureMode ? "synthetic" : "real"} phase="stopped" />{audioUrl && !fixtureMode && <audio className="audio-player" src={audioUrl} controls aria-label="Captured microphone audio review" />}<div className="capture-actions">{!fixtureMode && <button className="record-button" onClick={processLocally}><Waveform size={17}/> Process locally</button>}<button className="discard-button" onClick={discard}><Trash size={17} /> Discard permanently</button></div></div>}
         {["hashing","uploading","queued","processing"].includes(state.phase) && <div className="center-state"><Waveform size={40}/><p className="stage-index">{state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "LOCAL TRANSCRIPTION" : "LOCAL DETERMINISTIC PROCESSOR"}</p><h2>{state.phase === "hashing"?"Preparing and verifying audio…":state.phase === "uploading"?"Uploading to this machine's processor…":state.phase === "queued"?"Queued for processing…":state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE)?"Transcribing and summarizing…":"Building cited intelligence…"}</h2><div className="progress-track"><i style={{width:`${state.progress}%`}}/></div><p>{state.progress}% · {state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "speech is transcribed on this machine; long meetings take a few minutes" : "development fake, not real speech recognition or diarization"}</p></div>}
-        {state.phase === "completed" && <MeetingIntelligenceResult result={processingResult} participants={participants} onDownload={async () => { const result = await downloadMeetingRecord({ meetingId }); if (!result.ok) window.alert(result.message) }} />}
+        {state.phase === "completed" && <MeetingIntelligenceResult result={processingResult} participants={participants} meetingId={meetingId} onChanged={setProcessingResult} onDownload={async () => { const result = await downloadMeetingRecord({ meetingId }); if (!result.ok) window.alert(result.message) }} />}
         {state.phase === "failed" && <div className="center-state danger-state"><Warning size={42} /><p className="stage-index">PROCESSING FAILED</p><h2>The recording could not be processed.</h2><p>{processingResult?.recording?.retryAvailable ? "The audio is still held on this machine. You can try again; consent and policy are checked again first." : "The retry limit was reached or the audio is no longer available. Please record the meeting again."}</p>{processingResult?.recording?.retryAvailable ? <button className="copper-button" onClick={retryProcessing}>Retry processing</button> : <button className="copper-button" onClick={() => preflight()}>Start a new recording</button>}</div>}
         {state.phase === "discarded" && <div className="center-state"><ShieldCheck size={40} /><h2>Audio discarded.</h2><p>Microphone access ended and all in-memory chunks were cleared.</p><button className="copper-button" onClick={() => preflight()}>Start a new consent check</button></div>}
         {["blocked", "policy-stopped", "error"].includes(state.phase) && <div className="center-state danger-state"><Warning size={42} /><p className="stage-index">CAPTURE STOPPED</p><h2>{state.phase === "blocked" ? "Policy prevents recording." : "Recording cannot continue."}</h2><p>{state.error || state.stopReason}</p>{state.phase === "error" && <button className="copper-button" onClick={() => preflight()}>Try again</button>}</div>}
@@ -529,7 +575,7 @@ export function RecordingStudio({ onBack, meeting = { id: DEFAULT_MEETING_ID, ti
     </section>
     {earlier && <section className="earlier-recording" ref={earlierRef} aria-label={`Recording ${earlier.index + 1} results`}>
       <header><p className="stage-index">EARLIER RECORDING · {earlier.index + 1} OF {meetingRecordings.length}</p><button className="earlier-close" onClick={() => setEarlier(null)}>Close</button></header>
-      {earlier.error ? <p className="intelligence-note">{earlier.error}</p> : <MeetingIntelligenceResult result={earlier.result} participants={participants} />}
+      {earlier.error ? <p className="intelligence-note">{earlier.error}</p> : <MeetingIntelligenceResult result={earlier.result} participants={participants} meetingId={meetingId} onChanged={(result) => setEarlier((current) => ({ ...current, result }))} />}
     </section>}
   </main>
 }
