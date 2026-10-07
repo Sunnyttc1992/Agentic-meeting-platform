@@ -5,7 +5,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 ## Project and checkpoint
 
 - Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
-- Latest functional code checkpoint: `5ea85a0 Show every recording of a meeting in the studio` (Claude session of 2026-10-06 began after `474d72d`; feature delivery began at `5390d5a`). The commit that updates this handoff follows it.
+- Latest functional code checkpoint: `2779296 Add local bge-m3 embeddings for hybrid chat retrieval` (meeting chat began at `cc12c97`; before that `5ea85a0 Show every recording of a meeting in the studio`) (Claude session of 2026-10-06 began after `474d72d`; feature delivery began at `5390d5a`). The commit that updates this handoff follows it.
 - The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
 - Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
@@ -53,6 +53,22 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 28. **Prototype ZIP** now uses forward-slash entry names; a simulated clean install passed (see `docs/operations/local-prototype-distribution.md`).
 29. **Studio lists every recording of a meeting** (status-only `GET /meetings/:id/recordings`) and opens an earlier recording's results in a panel below the capture area.
 
+30. **Meeting chat (RAG)** in the workspace ("Ask your meetings"; `GET`/`POST`/`DELETE /chat/messages`). User decisions: answers by OpenAI or Claude via a separate `MEETING_CHAT_PROVIDER` opt-in, retrieval across every meeting the asker may read, history saved per user. The provider receives only the question, at most 12 excerpts labelled with anonymous meeting letters and dates, and up to 4 earlier readable turns; only citations to excerpts actually sent survive. Saved turns are hidden while any source meeting is unreadable and deleted with it. Retrieval, embedding, and the provider call run outside the database transaction. PostgreSQL migration `002_chat_turns`.
+31. **Hybrid retrieval with local embeddings:** `bge-m3` through Ollama on this computer (loopback-only client), vectors in `knowledge_embeddings` (migration `003_knowledge_embeddings`, tenant RLS), built lazily for readable meetings and cleared whenever knowledge is replaced, quarantined, or deleted. Keyword and vector rankings are fused by reciprocal rank fusion (similarity floor 0.45, top 6). Falls back to keywords without Ollama or migration 003.
+32. **RAG evaluation:** `npm run eval:rag` (retrieval, local, floor in `npm test`), `-- --keyword` for the baseline, `-- --answers` for answer scoring through the chat provider. Hybrid vs keyword on the synthetic set: paraphrase recall 0.90 vs 0.47, overall recall 0.95 vs 0.76, MRR 0.93 vs 0.77, fact coverage 1.00 vs 0.82, abstention 1.00 vs 0.87, leaks 0.
+
+### State of this computer's installation (2026-10-06)
+
+- PostgreSQL is migrated to `003_knowledge_embeddings` (the user ran `npm run db:migrate` as `ledger_owner`; the owner URL needs `?sslmode=verify-full&sslrootcert=C:/ProgramData/MeetingLedger/certs/root-ca.pem`, because `pg_hba.conf` accepts only encrypted connections).
+- `.env` now sets `MEETING_CHAT_PROVIDER=openai` (user decision, accepting that excerpts of the existing meetings go to OpenAI as their summaries already did). Ollama serves `bge-m3` locally.
+- The app runs at `http://localhost:4173`; stale Codex previews on other ports were stopped.
+
+### Suggested next work for chat
+
+- Join each matched transcript line with its neighbouring lines before sending it: short Whisper fragments ("case or start for meetings.") give the answer model little context. Re-run `npm run eval:rag -- --answers` before and after.
+- A retention rule for chat history itself, and a backup-retention review for vectors.
+- pgvector only when meeting volume makes in-process similarity slow.
+
 ### Decisions Claude made while the user was offline (2026-10-06), for review
 
 - Per-recording keys live in a server-writable folder outside the DB dump, not beside the read-only master key; that folder is deliberately excluded from database backups.
@@ -64,7 +80,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 
 ## Validation at this checkpoint
 
-- `npm test`: **236/236 passing** after the 2026-10-06 Claude session. `npm run test:sites` 4/4; `npm run build` passed.
+- `npm test`: **259/259 passing** after meeting chat and hybrid retrieval (236/236 before chat). `npm run test:sites` 4/4; `npm run build` passed.
 - `npm test`: 208/208 passing at the multi-recording fix (three new regression tests across in-memory, SQLite, and PostgreSQL/PGlite; each failed before the fix).
 - `npm run smoke:browser` and `npm run smoke:browser -- -ProcessRecording` passed with zero browser errors after the multi-recording fix.
 - `npm run build`: passed.
