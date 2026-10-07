@@ -11,6 +11,8 @@ import { ClaudeMeetingIntelligence } from './intelligence.js'
 import { OpenAIMeetingIntelligence } from './intelligence-openai.js'
 import { ClaudeChatAnswerer, OpenAIChatAnswerer } from './chat.js'
 import { OllamaEmbedder } from './embeddings.js'
+import { ChatQuota, DEFAULT_DAILY_QUESTION_LIMIT } from './guardrails.js'
+import { DEFAULT_CHAT_RETENTION_DAYS } from './chat-memory.js'
 import { RECORDING_MIME_TYPES, SPEECH_WAV_MIME_TYPE } from '../src/recordingFormats.js'
 
 // 16 kHz mono 16-bit WAV is 32 KB/s: 160 MB holds roughly 83 minutes.
@@ -96,9 +98,14 @@ export function createSpeechProcessor({ mode = process.env.MEETING_PROCESSOR ?? 
 
 // `storage` defaults to in-memory so tests never touch disk; the local servers
 // pass durable SQLite storage (see server/adapters/sqlite.js).
-export async function createDevelopmentPlatform({ speechProcessor = createSpeechProcessor(), storage = createInMemoryMeetingStorage(), chatAnswerer = createChatAnswerer(), embedder = createEmbedder() } = {}) {
+export async function createDevelopmentPlatform({ speechProcessor = createSpeechProcessor(), storage = createInMemoryMeetingStorage(), chatAnswerer = createChatAnswerer(), embedder = createEmbedder(), env = process.env } = {}) {
+  // Chat guardrail and memory settings: a daily question limit per user and
+  // how long saved chat is kept.
+  const positive = (value, fallback) => (Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : fallback)
   const platform = new MeetingIntelligencePlatform({
     storage, speechProcessor, chatAnswerer, embedder,
+    chatQuota: new ChatQuota({ limit: positive(env.MEETING_CHAT_DAILY_LIMIT, DEFAULT_DAILY_QUESTION_LIMIT) }),
+    chatRetentionDays: positive(env.MEETING_CHAT_RETENTION_DAYS, DEFAULT_CHAT_RETENTION_DAYS),
     policy: new PolicyEngine({ retentionPolicies: DEVELOPMENT_RETENTION_POLICIES }),
     maxRecordingBytes: LOCAL_MAX_RECORDING_BYTES,
     // The real pipeline transcribes only verified 16 kHz mono WAV.

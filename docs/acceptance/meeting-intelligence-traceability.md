@@ -164,7 +164,7 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 | AI-02 | done | A canary in an unreadable meeting never reaches the chat provider, answer, sources, or history | Red-team review of the live chat |
 | AI-03 | done | none | Model/pipeline version on every claim |
 | AI-04 | none | none | No agent tools exist yet |
-| AI-05 | done | Saved chat turns are tenant- and user-scoped, read only while every source meeting is readable, purged with the meeting (in-memory, SQLite including the raw file, PostgreSQL with RLS) | Retention policy for chat history itself |
+| AI-05 | done | Saved chat turns are tenant- and user-scoped, read only while every source meeting is readable, purged with the meeting (in-memory, SQLite including the raw file, PostgreSQL with RLS) | none at M (chat retention, per-turn forget, and recall from readable turns only are tested in `server/chat-layers.test.js`) |
 | AI-06 | done | none | none at M |
 
 ## Current verdict

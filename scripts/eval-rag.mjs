@@ -38,11 +38,11 @@ if (values.json) {
   }
   console.log('\nBy category:')
   for (const [category, group] of Object.entries(summary.byCategory)) {
-    const answerPart = group.abstention !== undefined ? ` | abstention ${cell(group.abstention)} cite-P ${cell(group.citationPrecision)} cite-R ${cell(group.citationRecall)} facts ${cell(group.factCoverage)}` : ''
+    const answerPart = group.abstention !== undefined ? ` | abstention ${cell(group.abstention)} cite-P ${cell(group.citationPrecision)} cite-R ${cell(group.citationRecall)} facts ${cell(group.factCoverage)} flagged ${cell(group.flagged)}` : ''
     console.log(`  ${category.padEnd(13)} n=${group.questions} recall ${cell(group.recall)} MRR ${cell(group.mrr)} nDCG ${cell(group.ndcg)} precision ${cell(group.precision)} spurious ${cell(group.spurious)}${answerPart}`)
   }
   const o = summary.overall
-  console.log(`\nOverall: hit ${cell(o.hit)} recall ${cell(o.recall)} MRR ${cell(o.mrr)} nDCG ${cell(o.ndcg)} precision ${cell(o.precision)}${o.abstention !== undefined ? ` | abstention ${cell(o.abstention)} cite-P ${cell(o.citationPrecision)} cite-R ${cell(o.citationRecall)} facts ${cell(o.factCoverage)}` : ''} | leaks ${o.leaks}`)
+  console.log(`\nOverall: hit ${cell(o.hit)} recall ${cell(o.recall)} MRR ${cell(o.mrr)} nDCG ${cell(o.ndcg)} precision ${cell(o.precision)}${o.abstention !== undefined ? ` | abstention ${cell(o.abstention)} cite-P ${cell(o.citationPrecision)} cite-R ${cell(o.citationRecall)} facts ${cell(o.factCoverage)} flagged ${cell(o.flagged)}` : ''} | leaks ${o.leaks}`)
 }
 // Leakage is a gate: any trace of the restricted meeting fails the run.
 process.exitCode = summary.overall.leaks === 0 ? 0 : 1

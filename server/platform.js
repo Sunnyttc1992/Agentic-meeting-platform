@@ -8,8 +8,10 @@ import { assertMeetingStorageContract } from './storage.js'
 import { verifyAuditChain } from './audit.js'
 import { exportFilename, renderMeetingRecordMarkdown } from './meeting-export.js'
 import { InMemoryChatRepository, InMemoryCommitmentRegistry, InMemoryEmbeddingRepository } from './adapters/in-memory.js'
-import { chatKeywords, keywordScore, MAX_CHAT_EXCERPT_TEXT, MAX_CHAT_EXCERPTS, MAX_CHAT_PROVIDER_HISTORY_TURNS, MAX_CHAT_QUESTION_LENGTH } from './chat.js'
+import { chatKeywords, keywordScore, MAX_CHAT_EXCERPT_TEXT, MAX_CHAT_EXCERPTS } from './chat.js'
 import { cosineSimilarity, embeddingTextHash } from './embeddings.js'
+import { checkGrounding, GUARDRAIL_CODES, keepValidCitations, prepareOutbound, validateQuestion } from './guardrails.js'
+import { compactVector, DEFAULT_CHAT_RETENTION_DAYS, isExpired, memoryText, retentionCutoff, selectMemory } from './chat-memory.js'
 
 const PROCESSOR_FAILED = 'PROCESSOR_FAILED'
 const MAX_CHAT_CANDIDATE_MEETINGS = 25
@@ -94,7 +96,7 @@ const SAFE_AUDIT_ACTIONS = new Set([
   'meeting.create', 'meeting.list', 'consent.record', 'recording.preflight', 'recording.create', 'recording.upload',
   'recording.process', 'recording.process.retry', 'recording.process.complete', 'recording.status', 'recording.delete',
   'recording.authorization.status', 'recording.list',
-  'chat.ask', 'chat.history.read', 'chat.history.clear',
+  'chat.ask', 'chat.history.read', 'chat.history.clear', 'chat.guardrail', 'chat.turn.delete', 'chat.history.expire',
   'transcript.append', 'knowledge.assertions.add', 'knowledge.read', 'knowledge.search',
   'ai.retrieve', 'privacy-access.read', 'meeting.export', 'retention.expire',
   'commitment.query',
@@ -225,6 +227,8 @@ function scopedStorageRepositories(storage, ready) {
       appendTurn: (turn) => write(turn.tenantId, (transaction) => transaction.chat.appendTurn(turn)),
       clearForUser: (tenantId, userId) => write(tenantId, (transaction) => transaction.chat.clearForUser(userId)),
       clearMeeting: (tenantId, meetingId) => write(tenantId, (transaction) => transaction.chat.clearMeeting(meetingId)),
+      deleteTurn: (tenantId, userId, turnId) => write(tenantId, (transaction) => transaction.chat.deleteTurn(userId, turnId)),
+      purgeBefore: (tenantId, cutoff) => write(tenantId, (transaction) => transaction.chat.purgeBefore(cutoff)),
     }),
   })
 }
@@ -457,7 +461,7 @@ function validatedManualAssertionEnvelope(value) {
 export class MeetingIntelligencePlatform {
   #tenantTransaction = null
 
-  constructor({ storage = null, meetings, knowledge, recordings, audit, policy, speechProcessor, commitments, chat, chatAnswerer = null, embeddings, embedder = null, teamsIntegration = new MicrosoftTeamsIntegrationAdapter(), clock = { now: () => new Date() }, authorizationTtlMs = 300000, maxRecordingBytes = 10485760, acceptedMimeTypes = RECORDING_MIME_TYPES, schedule = queueMicrotask }) {
+  constructor({ storage = null, meetings, knowledge, recordings, audit, policy, speechProcessor, commitments, chat, chatAnswerer = null, embeddings, embedder = null, chatQuota = null, chatRetentionDays = DEFAULT_CHAT_RETENTION_DAYS, teamsIntegration = new MicrosoftTeamsIntegrationAdapter(), clock = { now: () => new Date() }, authorizationTtlMs = 300000, maxRecordingBytes = 10485760, acceptedMimeTypes = RECORDING_MIME_TYPES, schedule = queueMicrotask }) {
     // The `storage` bundle is the production persistence seam. Keeping the
     // individual repositories supported preserves existing local tests and
     // transports during the incremental migration, while a real deployment
@@ -524,7 +528,7 @@ export class MeetingIntelligencePlatform {
     embeddings ??= new InMemoryEmbeddingRepository()
     invariant(meetings && knowledge && audit && commitments, 'INVALID_STORAGE_ADAPTER', 'Canonical meeting, knowledge, audit, and commitment repositories are required')
     const outbox = scopedOutbox
-    Object.assign(this, { meetings, knowledge, recordings, audit, policy, speechProcessor, commitments, chat, chatAnswerer, embeddings, embedder, outbox, teamsIntegration, clock, authorizationTtlMs, maxRecordingBytes, acceptedMimeTypes: Object.freeze([...acceptedMimeTypes]), schedule })
+    Object.assign(this, { meetings, knowledge, recordings, audit, policy, speechProcessor, commitments, chat, chatAnswerer, embeddings, embedder, chatQuota, chatRetentionDays, outbox, teamsIntegration, clock, authorizationTtlMs, maxRecordingBytes, acceptedMimeTypes: Object.freeze([...acceptedMimeTypes]), schedule })
   }
 
   #outboxKey(type, aggregateId, revision) {
@@ -1501,7 +1505,9 @@ export class MeetingIntelligencePlatform {
   async enforceRetention(tenantId, correlationId = randomUUID()) {
     const actor = principal({ tenantId, userId: RETENTION_SERVICE_ID })
     const now = this.clock.now()
-    const summary = { expired: 0, held: 0 }
+    const summary = { expired: 0, held: 0, chatTurnsExpired: 0 }
+    summary.chatTurnsExpired = Number(await this.chat.purgeBefore(tenantId, retentionCutoff(now, this.chatRetentionDays).toISOString())) || 0
+    if (summary.chatTurnsExpired > 0) await this.#audit({ correlationId, principal: actor, action: 'chat.history.expire', outcome: 'allowed', reason: null })
     for (const meetingRecord of (await this.meetings.list(tenantId))) {
       if (meetingRecord.retentionState === 'deleted' || !this.policy.retentionExpired({ meeting: meetingRecord, now })) continue
       if (meetingRecord.retentionState === 'held') { summary.held += 1; continue }
@@ -1694,65 +1700,128 @@ export class MeetingIntelligencePlatform {
   // excerpts, the question, and a few earlier readable turns reach the
   // configured answer provider; its reply is untrusted, so only citations
   // that point at excerpts actually sent are kept.
+  // Meeting chat runs through two explicit layers (see server/guardrails.js
+  // and server/chat-memory.js):
+  //   guardrails  input validation and a daily quota, personal-data redaction
+  //               of everything sent, citation and grounding checks on output
+  //   memory      recent turns, related older turns recalled locally, and
+  //               retention; every turn is usable only while all of its
+  //               meetings are readable
+  // Retrieval, embedding, and the provider call run before the audited
+  // transaction, so a slow model never holds a database transaction open; a
+  // failure there is still recorded as a denied chat.ask.
   async askChat(input, body, correlationId = randomUUID()) {
     const actor = principal(input)
-    const question = typeof body?.question === 'string' ? body.question.trim() : ''
-    invariant(question.length > 0 && question.length <= MAX_CHAT_QUESTION_LENGTH, 'INVALID_CHAT_QUESTION', `A question must be 1 to ${MAX_CHAT_QUESTION_LENGTH} characters`, 400)
-    // Retrieval, embedding, and the provider call run before the audited
-    // transaction, so a slow model never holds a database transaction open.
-    // A failure there is still recorded as a denied chat.ask.
     let prepared
     try {
+      const question = validateQuestion(body?.question)
+      this.chatQuota?.check(actor.tenantId, actor.userId)
       prepared = await this.#prepareChatTurn(actor, question, correlationId)
     } catch (error) {
       return this.#audited(actor, correlationId, 'chat.ask', null, async () => { throw error })
     }
-    return (await this.#audited(actor, correlationId, 'chat.ask', null, async () => {
+    const result = await this.#audited(actor, correlationId, 'chat.ask', null, async () => {
       await this.chat.appendTurn(prepared.turn)
       return Object.freeze({ turn: this.#chatTurnView(prepared.turn, prepared.sources) })
-    }))
+    })
+    this.chatQuota?.record(actor.tenantId, actor.userId)
+    // Each guardrail that acted is recorded by its code only, never content.
+    for (const code of prepared.guardrails) await this.#audit({ correlationId, principal: actor, action: 'chat.guardrail', outcome: 'allowed', reason: code })
+    return result
   }
 
   async #prepareChatTurn(actor, question, correlationId) {
     // Reading history first also surfaces CHAT_NOT_MIGRATED before any
     // excerpt could be sent to a provider.
     const { turns: history } = await this.#readableChatTurns(actor)
-    const { excerpts, retrieval } = await this.#chatExcerpts(actor, question, correlationId)
+    let questionVector = null
+    if (this.embedder) {
+      try { [questionVector] = await this.embedder.embed([question]) } catch { questionVector = null }
+    }
+    const memory = selectMemory({ turns: history, questionVector, model: this.embedder?.model ?? null })
+    const { excerpts, retrieval } = await this.#chatExcerpts(actor, question, correlationId, questionVector)
+    const guardrails = new Set()
     let status = 'no-sources'
     let answer = null
     let cited = []
     let model = null
+    let grounding = null
+    let memorySent = false
     if (excerpts.length > 0 && !this.chatAnswerer) {
       status = 'sources-only'
       cited = excerpts
     } else if (excerpts.length > 0) {
+      const outbound = prepareOutbound({
+        question,
+        history: memory.working.map((turn) => ({ question: turn.question, answer: turn.answer ?? '' })),
+        recalled: memory.recalled.map((turn) => ({ question: turn.question, answer: turn.answer ?? '' })),
+        excerpts: excerpts.map((item) => item.prompt),
+      })
+      if (outbound.redacted > 0) guardrails.add(GUARDRAIL_CODES.personalDataRedacted)
+      memorySent = memory.working.length + memory.recalled.length > 0
       let result
       try {
-        result = await this.chatAnswerer.answer({
-          question,
-          history: history.slice(-MAX_CHAT_PROVIDER_HISTORY_TURNS).map((turn) => ({ question: turn.question, answer: turn.answer ?? '' })),
-          excerpts: excerpts.map((item) => item.prompt),
-        })
+        result = await this.chatAnswerer.answer(outbound.request)
       } catch {
         throw new DomainError('CHAT_ANSWER_FAILED', 'The answer could not be generated, and nothing was saved', 502)
       }
-      const byLabel = new Map(excerpts.map((item) => [item.label, item]))
-      cited = (Array.isArray(result?.citations) ? result.citations : []).map((label) => byLabel.get(label)).filter(Boolean)
+      const sentByLabel = new Map(outbound.request.excerpts.map((item) => [item.label, item]))
+      const kept = keepValidCitations(result?.citations, new Map(excerpts.map((item) => [item.label, item])))
+      if (kept.dropped > 0) guardrails.add(GUARDRAIL_CODES.citationDropped)
+      cited = kept.cited
       const text = typeof result?.answer === 'string' ? result.answer.trim() : ''
       if (result?.answered !== true) { status = 'not-covered'; answer = text || null; cited = [] }
       else if (cited.length === 0 || !text) { status = 'unsupported' }
-      else { status = 'answered'; answer = text }
+      else {
+        grounding = await checkGrounding({
+          answer: text,
+          citedTexts: cited.map((item) => sentByLabel.get(item.label)?.text ?? ''),
+          citedVectors: cited.every((item) => Array.isArray(item.vector)) ? cited.map((item) => item.vector) : null,
+          sentTexts: [
+            ...outbound.request.excerpts.flatMap((item) => [item.text, item.meetingDate, item.at ?? '']),
+            ...[...outbound.request.history, ...outbound.request.recalled].flatMap((turn) => [turn.question, turn.answer]),
+            question,
+          ],
+          embedder: this.embedder,
+        })
+        if (grounding.unsupportedNumbers.length > 0) guardrails.add(GUARDRAIL_CODES.ungroundedNumber)
+        if (grounding.unsupportedSentences.length > 0) guardrails.add(GUARDRAIL_CODES.ungroundedStatement)
+        // An answer with no statement close to its sources is withheld.
+        if (grounding.allUnsupported) { status = 'unsupported'; cited = [] }
+        else { status = 'answered'; answer = text }
+      }
       model = typeof result?.model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(result.model) ? result.model : null
     }
     const turn = {
       id: randomUUID(), tenantId: actor.tenantId, userId: actor.userId, createdAt: this.clock.now().toISOString(),
       question, answer, status, retrieval, provider: status === 'sources-only' || status === 'no-sources' ? null : (this.chatAnswerer?.providerName ?? null), model,
       sources: cited.map((item) => ({ label: item.label, meetingId: item.meetingId, sourceId: item.sourceId })),
-      // Every meeting whose excerpts informed the turn, cited or not: losing
-      // access to any of them hides the turn, and deleting any deletes it.
-      meetingIds: [...new Set(excerpts.map((item) => item.meetingId))],
+      // Every meeting whose excerpts informed the turn, or whose earlier turns
+      // were recalled into it: losing access to any of them hides the turn,
+      // and deleting any deletes it.
+      meetingIds: [...new Set([...excerpts.map((item) => item.meetingId), ...(memorySent ? [...memory.working, ...memory.recalled].flatMap((item) => item.meetingIds) : [])])],
+      memory: memorySent ? { working: memory.working.length, recalled: memory.recalled.length } : { working: 0, recalled: 0 },
+      ...(grounding ? { grounding: { method: grounding.method, unsupportedSentences: grounding.unsupportedSentences, unsupportedNumbers: grounding.unsupportedNumbers } } : {}),
+      guardrails: [...guardrails],
     }
-    return { turn, sources: new Map(excerpts.map((item) => [`${item.meetingId}:${item.sourceId}`, item])) }
+    if (this.embedder && answer !== null) {
+      try {
+        const [vector] = await this.embedder.embed([memoryText(turn)])
+        Object.assign(turn, { memoryModel: this.embedder.model, memoryVector: compactVector(vector) })
+      } catch { /* the turn is still saved; it just cannot be recalled later */ }
+    }
+    return { turn, guardrails: [...guardrails], sources: new Map(excerpts.map((item) => [`${item.meetingId}:${item.sourceId}`, item])) }
+  }
+
+  // The asker removes one saved question and its answer. Nothing else in the
+  // history changes.
+  async deleteChatTurn(input, turnId, correlationId = randomUUID()) {
+    const actor = principal(input)
+    invariant(typeof turnId === 'string' && /^[0-9a-f-]{36}$/.test(turnId), 'INVALID_CHAT_TURN', 'Chat turn ID is invalid', 400)
+    return (await this.#audited(actor, correlationId, 'chat.turn.delete', null, async () => {
+      invariant(await this.chat.deleteTurn(actor.tenantId, actor.userId, turnId), 'CHAT_TURN_NOT_FOUND', 'Chat turn not found', 404)
+      return Object.freeze({ deleted: true })
+    }))
   }
 
   async getChatHistory(input, correlationId = randomUUID()) {
@@ -1770,6 +1839,7 @@ export class MeetingIntelligencePlatform {
       return Object.freeze({
         provider: this.chatAnswerer?.providerName ?? null,
         embeddingModel: this.embedder?.model ?? null,
+        retentionDays: this.chatRetentionDays,
         turns: Object.freeze(recent.map((turn) => this.#chatTurnView(turn, sources))),
       })
     }))
@@ -1797,6 +1867,7 @@ export class MeetingIntelligencePlatform {
     const turns = []
     for (const turn of (await this.chat.forUser(actor.tenantId, actor.userId)) ?? []) {
       if (turn?.tenantId !== actor.tenantId || turn.userId !== actor.userId || !Array.isArray(turn.meetingIds) || !Array.isArray(turn.sources)) continue
+      if (isExpired(turn, this.clock.now(), this.chatRetentionDays)) continue
       let visible = true
       for (const meetingId of turn.meetingIds) if (!(await readable(meetingId))) { visible = false; break }
       if (visible) turns.push(turn)
@@ -1809,12 +1880,8 @@ export class MeetingIntelligencePlatform {
   // meeting is authorized before its knowledge or vectors are read. The two
   // rankings are merged by reciprocal rank fusion. If embedding fails or the
   // database is not migrated, retrieval falls back to keywords only.
-  async #chatExcerpts(actor, question, correlationId) {
+  async #chatExcerpts(actor, question, correlationId, questionVector = null) {
     const keywords = chatKeywords(question)
-    let questionVector = null
-    if (this.embedder) {
-      try { [questionVector] = await this.embedder.embed([question]) } catch { questionVector = null }
-    }
     const keywordCandidates = new Set()
     for (const keyword of keywords) for (const meetingId of (await this.knowledge.meetingIdsMatching(actor.tenantId, keyword))) keywordCandidates.add(meetingId)
     const candidates = [...keywordCandidates]
@@ -1851,6 +1918,7 @@ export class MeetingIntelligencePlatform {
           keyword: keywordScore(item.text, keywords) + (Object.hasOwn(item, 'kind') ? 0.5 : 0),
           keywordHit: keywordScore(item.text, keywords) > 0,
           similarity: vectors?.get(item.id) ? cosineSimilarity(questionVector, vectors.get(item.id)) : null,
+          vector: vectors?.get(item.id) ?? null,
         })
       }
     }
@@ -1863,12 +1931,12 @@ export class MeetingIntelligencePlatform {
     }
     const ranked = [...fused.entries()].sort((a, b) => b[1] - a[1]).map(([entry]) => entry)
     const letters = new Map()
-    const excerpts = ranked.slice(0, MAX_CHAT_EXCERPTS).map(({ meetingRecord, item }, index) => {
+    const excerpts = ranked.slice(0, MAX_CHAT_EXCERPTS).map(({ meetingRecord, item, vector }, index) => {
       if (!letters.has(meetingRecord.id)) letters.set(meetingRecord.id, String.fromCharCode(65 + (letters.size % 26)))
       const source = this.#chatSource(meetingRecord, item)
       const label = `E${index + 1}`
       return {
-        ...source, label,
+        ...source, label, vector,
         prompt: {
           label, meetingLetter: letters.get(meetingRecord.id), meetingDate: source.meetingDate ?? 'date unknown', kind: source.kind,
           at: Number.isFinite(source.startMs) ? formatChatTime(source.startMs) : null,
@@ -1924,6 +1992,8 @@ export class MeetingIntelligencePlatform {
     return Object.freeze({
       id: turn.id, createdAt: turn.createdAt, question: turn.question, answer: turn.answer ?? null, status: turn.status, retrieval: turn.retrieval ?? 'keyword',
       provider: turn.provider ?? null, model: turn.model ?? null,
+      memory: turn.memory ?? { working: 0, recalled: 0 },
+      grounding: turn.grounding ?? null,
       // A source whose content was replaced or removed is simply not shown.
       sources: Object.freeze(turn.sources.map((source) => {
         const resolved = sources.get(`${source.meetingId}:${source.sourceId}`)

@@ -15,9 +15,10 @@ test('retrieval metrics: recall, precision, MRR, and nDCG on a ranked list', () 
 test('answer metrics: citations, facts, and abstention', () => {
   const testCase = { relevant: ['m:d1', 'm:s1'], facts: [/48,?000/, /acme/i] }
   const answered = { status: 'answered', answer: 'Acme got 48,000.', sources: [{ meetingId: 'm', sourceId: 'd1' }, { meetingId: 'm', sourceId: 's9' }] }
-  assert.deepEqual(answerMetrics(answered, testCase), { answered: true, abstentionCorrect: true, citationPrecision: 0.5, citationRecall: 0.5, factCoverage: 1 })
+  assert.deepEqual(answerMetrics(answered, testCase), { answered: true, abstentionCorrect: true, citationPrecision: 0.5, citationRecall: 0.5, flagged: 0, factCoverage: 1 })
+  assert.equal(answerMetrics({ ...answered, grounding: { unsupportedNumbers: [99], unsupportedSentences: [] } }, testCase).flagged, 1)
   const abstained = { status: 'not-covered', answer: 'Not covered.', sources: [] }
-  assert.deepEqual(answerMetrics(abstained, testCase), { answered: false, abstentionCorrect: false, citationPrecision: null, citationRecall: null, factCoverage: 0 })
+  assert.deepEqual(answerMetrics(abstained, testCase), { answered: false, abstentionCorrect: false, citationPrecision: null, citationRecall: null, flagged: null, factCoverage: 0 })
   assert.equal(answerMetrics(abstained, { relevant: [], answerable: false }).abstentionCorrect, true)
   assert.equal(answerMetrics(answered, { relevant: [], answerable: false }).abstentionCorrect, false)
   assert.equal(summarize([{ category: 'k', retrieval: { recall: 1 }, leaked: true }]).overall.leaks, 1)

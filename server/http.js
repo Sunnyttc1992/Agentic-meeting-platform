@@ -182,6 +182,8 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
         return json(response, 200, await platform.askChat(principalFrom(request), body, correlationId))
       }
       if (url.pathname === '/chat/messages' && request.method === 'DELETE') return json(response, 200, await platform.clearChatHistory(principalFrom(request), correlationId))
+      const chatTurnMatch = url.pathname.match(/^\/chat\/messages\/([^/]+)$/)
+      if (chatTurnMatch && request.method === 'DELETE') return json(response, 200, await platform.deleteChatTurn(principalFrom(request), chatTurnMatch[1], correlationId))
       if (request.method === 'GET' && recordingsMatch) return json(response, 200, await platform.listRecordings(principalFrom(request), recordingsMatch[1], correlationId))
       if (request.method === 'POST' && recordingsMatch) { const body=await readJson(request); strictObject(body,['leaseId','contentType','byteLength','sha256'],['leaseId','contentType','byteLength','sha256']); return json(response,201,await platform.createRecording(principalFrom(request),recordingsMatch[1],body,correlationId)) }
       if (request.method === 'PUT' && bytesMatch) { const contentType=String(header(request,'content-type')??'').toLowerCase(); const rawLength=header(request,'content-length'); const contentLength=rawLength===undefined?NaN:Number(rawLength); const bytes=await readBytes(request,platform.maxRecordingBytes); return json(response,200,await platform.uploadRecording(principalFrom(request),bytesMatch[1],bytesMatch[2],{contentType,contentLength,bytes},correlationId)) }

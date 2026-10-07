@@ -54,7 +54,7 @@ async function openDatabase(dataDir = undefined, { migrate = true } = {}) {
   return { db, connect, asAdmin, app: admin, close: () => db.close() }
 }
 
-const chatAnswerer = { providerName: 'Test provider', answer: async ({ excerpts }) => ({ answer: 'Keep the phased rollout.', answered: true, citations: [excerpts[0].label], model: 'test-model' }) }
+const chatAnswerer = { providerName: 'Test provider', answer: async ({ excerpts }) => ({ answer: 'Keep the phased rollout.', answered: true, citations: [(excerpts.find((item) => /keep the phased rollout/i.test(item.text)) ?? excerpts[0]).label], model: 'test-model' }) }
 
 function platformOn(storage, { schedule = (job) => job(), embedder = null } = {}) {
   const client = { beta: { messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(REPLY) }] }) } } }
@@ -149,6 +149,11 @@ test('saved chat is stored per tenant and user in PostgreSQL and deleted with it
     assert.equal((await platformOn(storage).getChatHistory(sam)).turns.length, 1, 'history is durable')
     assert.deepEqual((await platform.getChatHistory(alex)).turns, [])
     assert.deepEqual(await storage.scope({ tenantId: 'southstar' }).chat.forUser('sam'), [], 'row-level security hides other tenants')
+    const extra = (await platform.askChat(sam, { question: 'phased rollout again?' })).turn
+    assert.deepEqual(await platform.deleteChatTurn(sam, extra.id), { deleted: true })
+    await platform.askChat(alex, { question: 'phased rollout?' })
+    assert.equal(await platform.chat.purgeBefore('northstar', '9999-12-31'), 2, 'the cutoff deletes every older turn')
+    await platform.askChat(sam, { question: 'phased rollout?' })
     await platform.deleteMeetingContent(alex, 'meeting-1')
     assert.deepEqual((await platform.getChatHistory(sam)).turns, [])
   } finally { await database.close() }

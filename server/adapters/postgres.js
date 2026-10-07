@@ -218,6 +218,14 @@ export function openPostgresStorage({ connect, audioKey, audioKeyProvider = null
     clearMeeting: (tenantId, meetingId) => inTenant(tenantId, async (client) => {
       if (await chatTable(client)) await client.query("DELETE FROM chat_turns WHERE tenant_id = $1 AND doc -> 'meetingIds' ? $2", [tenantId, meetingId])
     }),
+    deleteTurn: (tenantId, userId, turnId) => inTenant(tenantId, async (client) => {
+      if (!(await chatTable(client))) return false
+      return (await client.query("DELETE FROM chat_turns WHERE tenant_id = $1 AND user_id = $2 AND doc ->> 'id' = $3", [tenantId, userId, turnId])).rowCount > 0
+    }),
+    purgeBefore: (tenantId, cutoff) => inTenant(tenantId, async (client) => {
+      if (!(await chatTable(client))) return 0
+      return (await client.query("DELETE FROM chat_turns WHERE tenant_id = $1 AND doc ->> 'createdAt' < $2", [tenantId, cutoff])).rowCount
+    }),
   }
 
   // Retrieval vectors. Without migration 003 the table is absent: reads report

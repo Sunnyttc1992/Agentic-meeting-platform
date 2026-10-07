@@ -182,6 +182,16 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
       sql("DELETE FROM chat_turns WHERE tenant_id = ? AND EXISTS (SELECT 1 FROM json_each(chat_turns.doc, '$.meetingIds') WHERE json_each.value = ?)").run(tenantId, meetingId)
       purgeDeletedContent()
     },
+    deleteTurn(tenantId, userId, turnId) {
+      const { changes } = sql("DELETE FROM chat_turns WHERE tenant_id = ? AND user_id = ? AND json_extract(doc, '$.id') = ?").run(tenantId, userId, turnId)
+      purgeDeletedContent()
+      return changes > 0
+    },
+    purgeBefore(tenantId, cutoff) {
+      const { changes } = sql("DELETE FROM chat_turns WHERE tenant_id = ? AND json_extract(doc, '$.createdAt') < ?").run(tenantId, cutoff)
+      if (changes > 0) purgeDeletedContent()
+      return Number(changes)
+    },
   }
 
   const toBytes = (vector) => Buffer.from(Float32Array.from(vector).buffer)

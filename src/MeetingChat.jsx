@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ChatCircleText, PaperPlaneRight, Trash } from '@phosphor-icons/react'
+import { ArrowLeft, ChatCircleText, PaperPlaneRight, Trash, X } from '@phosphor-icons/react'
 import { localRequest } from './localApi.js'
 
 // Questions over every meeting the user can open. The server finds matching
@@ -16,16 +16,38 @@ const KIND_LABELS = { transcript: 'Transcript', decision: 'Decision', action: 'A
 const clock = (ms) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`
 const shortDate = (iso) => iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : null
 
-export function ChatTurn({ turn, embeddingModel = null }) {
+// Sentences are split the same way the server's grounding check splits them,
+// so a flagged index marks the right sentence.
+const sentencesOf = (text) => String(text ?? '').split(/(?<=[.!?])\s+/).map((sentence) => sentence.trim()).filter(Boolean)
+const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`
+
+function GroundedAnswer({ answer, grounding }) {
+  const flagged = new Set(grounding?.unsupportedSentences ?? [])
+  if (flagged.size === 0) return <p className="chat-answer">{answer}</p>
+  return <p className="chat-answer">{sentencesOf(answer).map((sentence, index) => <span key={index}>{index > 0 ? ' ' : ''}{flagged.has(index) ? <mark className="chat-unverified" title="Could not be matched to the cited sources">{sentence}</mark> : sentence}</span>)}</p>
+}
+
+function groundingWarning(grounding) {
+  const statements = grounding?.unsupportedSentences?.length ?? 0
+  const numbers = grounding?.unsupportedNumbers?.length ?? 0
+  if (!statements && !numbers) return null
+  const parts = [statements ? plural(statements, 'highlighted statement', 'highlighted statements') : null, numbers ? `the ${numbers === 1 ? 'number' : 'numbers'} ${grounding.unsupportedNumbers.join(', ')}` : null].filter(Boolean)
+  return `Check before relying on it: ${parts.join(' and ')} could not be matched to the sources below.`
+}
+
+export function ChatTurn({ turn, embeddingModel = null, onForget = null }) {
   const note = turn.status === 'not-covered' && turn.answer ? null : STATUS_NOTES[turn.status]
+  const warning = turn.status === 'answered' ? groundingWarning(turn.grounding) : null
   return <article className="chat-turn">
-    <p className="chat-question">{turn.question}</p>
-    {turn.answer && turn.status !== 'unsupported' && <p className="chat-answer">{turn.answer}</p>}
+    <div className="chat-turn-head"><p className="chat-question">{turn.question}</p>{onForget && <button className="chat-forget" onClick={() => onForget(turn)} title="Forget this question and its answer"><X size={12}/> Forget</button>}</div>
+    {turn.answer && turn.status !== 'unsupported' && <GroundedAnswer answer={turn.answer} grounding={turn.status === 'answered' ? turn.grounding : null} />}
+    {warning && <p className="chat-note chat-warning">{warning}</p>}
     {note && <p className="chat-note">{note}</p>}
     {turn.sources.length > 0 && <ol className="chat-sources" aria-label="Sources">{turn.sources.map((source, index) => <li key={source.label}>
       <details><summary><span className="chat-source-label">{index + 1}</span><b>{source.meetingTitle}</b><small>{[KIND_LABELS[source.kind] ?? 'Note', Number.isFinite(source.startMs) ? clock(source.startMs) : null, shortDate(source.meetingCreatedAt)].filter(Boolean).join(' · ')}</small></summary><p>{source.text}</p></details>
     </li>)}</ol>}
     {turn.provider && turn.status === 'answered' && <small className="chat-provenance">Written by {turn.provider}{turn.model ? ` (${turn.model})` : ''} from the sources above.</small>}
+    {turn.memory?.recalled > 0 && <small className="chat-provenance">Also drew on {plural(turn.memory.recalled, 'related earlier question', 'related earlier questions')} from your history.</small>}
     {embeddingModel && turn.retrieval === 'keyword' && <small className="chat-provenance">Meaning-based search was unavailable for this question, so only keyword matches were used.</small>}
   </article>
 }
@@ -43,6 +65,7 @@ export function AskMeetingsPage({ onBack }) {
   const [turns, setTurns] = useState([])
   const [provider, setProvider] = useState(null)
   const [embeddingModel, setEmbeddingModel] = useState(null)
+  const [retentionDays, setRetentionDays] = useState(null)
   const [question, setQuestion] = useState('')
   const [asking, setAsking] = useState(false)
   const [error, setError] = useState('')
@@ -52,7 +75,7 @@ export function AskMeetingsPage({ onBack }) {
 
   useEffect(() => {
     localRequest('/chat/messages')
-      .then((data) => { setTurns(data.turns ?? []); setProvider(data.provider ?? null); setEmbeddingModel(data.embeddingModel ?? null) })
+      .then((data) => { setTurns(data.turns ?? []); setProvider(data.provider ?? null); setEmbeddingModel(data.embeddingModel ?? null); setRetentionDays(data.retentionDays ?? null) })
       .catch((cause) => setError(cause.message))
       .finally(() => setLoaded(true))
   }, [])
@@ -73,6 +96,10 @@ export function AskMeetingsPage({ onBack }) {
     try { await localRequest('/chat/messages', { method: 'DELETE' }); setTurns([]) } catch (cause) { setError(cause.message) }
   }
   const useExample = (text) => { setQuestion(text); inputRef.current?.focus() }
+  const forget = async (turn) => {
+    if (!window.confirm('Forget this question and its answer? This cannot be undone.')) return
+    try { await localRequest(`/chat/messages/${turn.id}`, { method: 'DELETE' }); setTurns((current) => current.filter((item) => item.id !== turn.id)) } catch (cause) { setError(cause.message) }
+  }
 
   return <main className="capture-shell ask-shell">
     <header className="capture-nav">
@@ -94,7 +121,7 @@ export function AskMeetingsPage({ onBack }) {
             <p>Try one of these, or ask in your own words.</p>
             <div className="ask-examples">{EXAMPLES.map((text) => <button key={text} type="button" onClick={() => useExample(text)}>{text}</button>)}</div>
           </div>}
-          {turns.map((turn) => <ChatTurn key={turn.id} turn={turn} embeddingModel={embeddingModel} />)}
+          {turns.map((turn) => <ChatTurn key={turn.id} turn={turn} embeddingModel={embeddingModel} onForget={forget} />)}
           {asking && <p className="chat-note">Searching your meetings…</p>}
           <div ref={endRef} />
         </div>
@@ -111,7 +138,8 @@ export function AskMeetingsPage({ onBack }) {
           <div><dt>Scope</dt><dd>Every meeting you can open, checked at each question</dd></div>
           <div><dt>Search</dt><dd>{embeddingModel ? `Keyword and meaning (${embeddingModel}, on this computer)` : 'Keyword matching'}</dd></div>
           <div><dt>Answers</dt><dd>{provider ? `Written by ${provider}, citing their sources` : 'Off: matching excerpts only'}</dd></div>
-          <div><dt>History</dt><dd>{turns.length} saved {turns.length === 1 ? 'question' : 'questions'}</dd></div>
+          <div><dt>Safeguards</dt><dd>Contact details and ID numbers are removed before sending; answers are checked against their sources</dd></div>
+          <div><dt>Memory</dt><dd>{plural(turns.length, 'saved question', 'saved questions')}{retentionDays ? `, kept ${retentionDays} days` : ''}; recent and related earlier questions inform follow-ups</dd></div>
         </dl>
         {turns.length > 0 && <button className="ask-clear" onClick={clear}><Trash size={13}/> Clear history</button>}
         <small>{provider

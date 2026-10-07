@@ -89,6 +89,16 @@ export class InMemoryChatRepository {
   forUser(tenantId, userId) { return this.#turns.filter((turn) => turn.tenantId === tenantId && turn.userId === userId).map((turn) => structuredClone(turn)) }
   clearForUser(tenantId, userId) { this.#turns = this.#turns.filter((turn) => turn.tenantId !== tenantId || turn.userId !== userId) }
   clearMeeting(tenantId, meetingId) { this.#turns = this.#turns.filter((turn) => turn.tenantId !== tenantId || !turn.meetingIds.includes(meetingId)) }
+  deleteTurn(tenantId, userId, turnId) {
+    const before = this.#turns.length
+    this.#turns = this.#turns.filter((turn) => turn.tenantId !== tenantId || turn.userId !== userId || turn.id !== turnId)
+    return this.#turns.length < before
+  }
+  purgeBefore(tenantId, cutoff) {
+    const before = this.#turns.length
+    this.#turns = this.#turns.filter((turn) => turn.tenantId !== tenantId || String(turn.createdAt) >= cutoff)
+    return before - this.#turns.length
+  }
   snapshot() { return structuredClone(this.#turns) }
   restore(snapshot) { this.#turns = structuredClone(snapshot) }
 }

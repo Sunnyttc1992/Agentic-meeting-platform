@@ -13,6 +13,8 @@
 //   citation recall     share of relevant sources that were cited
 //   fact coverage       share of required facts the answer states
 //   abstention          unanswerable questions get no answer, answerable ones get one
+//   flagged             an answered turn carries a grounding flag (an unmatched
+//                       number or statement); on a correct answer this is a false alarm
 // Leakage: any retrieved, cited, or answered trace of a meeting the asker
 // cannot read. It must be zero; it is a gate, not a score.
 import { MAX_CHAT_EXCERPTS } from '../server/chat.js'
@@ -52,6 +54,7 @@ export function answerMetrics(turn, testCase) {
     abstentionCorrect: answerable ? answered : !answered,
     citationPrecision: answered && cited.length ? round(cited.filter((key) => gold.has(key)).length / cited.length) : null,
     citationRecall: answered && gold.size ? round(new Set(cited.filter((key) => gold.has(key))).size / gold.size) : null,
+    flagged: answered ? ((turn.grounding?.unsupportedNumbers?.length ?? 0) + (turn.grounding?.unsupportedSentences?.length ?? 0) > 0 ? 1 : 0) : null,
     factCoverage: answerable && facts.length ? round(answered ? facts.filter((pattern) => pattern.test(turn.answer ?? '')).length / facts.length : 0) : null,
   }
 }
@@ -75,6 +78,7 @@ export function summarize(rows) {
       citationPrecision: mean(items.map((row) => row.answer?.citationPrecision)),
       citationRecall: mean(items.map((row) => row.answer?.citationRecall)),
       factCoverage: mean(items.map((row) => row.answer?.factCoverage)),
+      flagged: mean(items.map((row) => row.answer?.flagged)),
     } : {}),
     leaks: items.filter((row) => row.leaked).length,
   })

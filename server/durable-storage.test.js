@@ -29,7 +29,7 @@ const AUDIO = Buffer.from(encodeWavPcm16(Float32Array.from({ length: 16000 }, (_
 
 function tempDirectory() { return mkdtempSync(join(tmpdir(), 'meeting-ledger-')) }
 
-const chatAnswerer = { providerName: 'Test provider', answer: async ({ excerpts }) => ({ answer: 'Keep the phased rollout.', answered: true, citations: [excerpts[0].label], model: 'test-model' }) }
+const chatAnswerer = { providerName: 'Test provider', answer: async ({ excerpts }) => ({ answer: 'Keep the phased rollout.', answered: true, citations: [(excerpts.find((item) => /keep the phased rollout/i.test(item.text)) ?? excerpts[0]).label], model: 'test-model' }) }
 
 function openPlatform(directory, { schedule = (job) => job(), embedder = null } = {}) {
   const durable = openLocalDurableStorage({ directory })
@@ -196,6 +196,10 @@ test('saved chat survives a restart, and deleting the meeting removes its turns 
     try {
       const history = await second.platform.getChatHistory(sam)
       assert.deepEqual(history.turns.map((turn) => [turn.question, turn.answer, turn.sources.length > 0]), [[question, 'Keep the phased rollout.', true]])
+      const extra = (await second.platform.askChat(sam, { question: 'phased rollout again?' })).turn
+      assert.deepEqual(await second.platform.deleteChatTurn(sam, extra.id), { deleted: true }, 'one turn can be forgotten')
+      assert.equal((await second.platform.getChatHistory(sam)).turns.length, 1)
+      assert.equal(await second.platform.chat.purgeBefore('northstar', '0000'), 0, 'nothing is older than the cutoff')
       await second.platform.deleteMeetingContent(alex, 'meeting-1')
       assert.deepEqual((await second.platform.getChatHistory(sam)).turns, [])
     } finally { second.durable.close() }
@@ -222,7 +226,9 @@ test('retrieval vectors persist as float32 in SQLite and are deleted with the me
       const reloaded = await second.platform.embeddings.forMeeting('northstar', 'meeting-1')
       assert.deepEqual(reloaded.map((row) => row.vector.map((value) => Math.round(value * 1e5))), stored.map((row) => row.vector.map((value) => Math.round(value * 1e5))))
       await second.platform.askChat(sam, { question: 'Is the rollout funded?' })
-      assert.equal(embedder.embedded.length, 1, 'after a restart only the question is embedded')
+      const knowledgeTexts = stored.length
+      assert.ok(knowledgeTexts > 0)
+      assert.equal(embedder.embedded.some((text) => /^(decision|summary|action|risk|question): /.test(text) || text === 'Rollout stays phased.'), false, 'after a restart no meeting knowledge is embedded again')
       await second.platform.deleteMeetingContent(alex, 'meeting-1')
       assert.deepEqual(await second.platform.embeddings.forMeeting('northstar', 'meeting-1'), [])
     } finally { second.durable.close() }

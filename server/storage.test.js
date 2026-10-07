@@ -152,7 +152,7 @@ test('storage contract rejects structurally forged and mis-scoped tenant facades
       audit: { ...inertCapabilities().audit, append: () => null },
       commitments: { ...inertCapabilities().commitments, replaceMeeting: () => null, clearMeeting: () => null },
       outbox: { ...inertCapabilities().outbox, enqueue: () => null },
-      chat: { ...inertCapabilities().chat, appendTurn: () => null, clearForUser: () => null, clearMeeting: () => null },
+      chat: { ...inertCapabilities().chat, appendTurn: () => null, clearForUser: () => null, clearMeeting: () => null, deleteTurn: () => false, purgeBefore: () => 0 },
       embeddings: { ...inertCapabilities().embeddings, replaceMeeting: () => null, clearMeeting: () => null },
     }, { writable: true })),
   })

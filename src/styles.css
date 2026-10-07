@@ -65,3 +65,5 @@ h1,h2,.item{font-family:"Cormorant Garamond",Georgia,serif;font-weight:500}h1{fo
 .ask-clear{display:flex;align-items:center;gap:7px;border:1px solid #4a4b47;background:none;color:#dba277;padding:8px 11px;font-size:9px;cursor:pointer;margin:0 0 26px}
 @media(max-width:1150px){.ask-main{border-right:0;padding:16px 22px 0}}
 @media(max-width:760px){.workspace-header-actions{flex-direction:column;align-items:stretch;width:100%}.ask-entry{padding:20px 22px}}
+.chat-turn-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}.chat-forget{flex:none;display:flex;align-items:center;gap:5px;border:0;background:none;color:#777a78;font-size:9px;cursor:pointer;padding:6px 0}.chat-forget:hover{color:#f18488}
+.chat-unverified{background:none;color:inherit;text-decoration:underline dotted #f2bd72;text-decoration-thickness:1px;text-underline-offset:3px}.chat-warning{border-left-color:#f2bd72;color:#e2c79e}

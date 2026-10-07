@@ -427,6 +427,10 @@ test('chat endpoints validate strictly, keep history per user, and clear it', as
     assert.equal(asked.body.turn.status, 'no-sources')
     assert.equal((await get(base, '/chat/messages', participant)).body.turns.length, 1)
     assert.deepEqual((await get(base, '/chat/messages', organizer)).body.turns, [])
+    const turnId = (await get(base, '/chat/messages', participant)).body.turns[0].id
+    assert.equal((await fetch(`${base}/chat/messages/${turnId}`, { method: 'DELETE', headers: headers(organizer) })).status, 404, 'another user cannot forget it')
+    assert.equal((await fetch(`${base}/chat/messages/${turnId}`, { method: 'DELETE', headers: headers(participant) })).status, 200)
+    await post(base, '/chat/messages', participant, { question: 'Anything else?' })
     const cleared = await fetch(`${base}/chat/messages`, { method: 'DELETE', headers: headers(participant) })
     assert.equal(cleared.status, 200)
     assert.deepEqual((await get(base, '/chat/messages', participant)).body.turns, [])

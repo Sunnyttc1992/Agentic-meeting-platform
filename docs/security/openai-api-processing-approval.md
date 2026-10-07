@@ -38,10 +38,10 @@ Meeting chat (`server/chat.js`, `askChat` in `server/platform.js`) is a separate
 | --- | --- |
 | The question (at most 1,000 characters) | Audio, voice data, or raw diarization labels |
 | Up to 12 excerpts (each at most 400 characters) from meetings the asker may read at that moment, each labelled `E1`, `E2`, ... with an anonymous meeting letter, the meeting date, and its kind (transcript line with time and anonymous speaker label, or decision, action, risk, question, summary) | Tenant, meeting, recording, segment, or assertion IDs; meeting titles; participant names |
-| Up to 4 earlier question-and-answer pairs from the same user's saved chat, only while that user can still read every meeting they drew on | Excerpts from meetings the asker cannot read, other users' chats, consent, audit, or keys |
+| Up to 4 recent and up to 2 related older question-and-answer pairs from the same user's saved chat (related turns are chosen locally by embedding similarity), only while that user can still read every meeting they drew on and only within the chat retention period | Excerpts from meetings the asker cannot read, other users' chats, consent, audit, or keys |
 | Instructions and a strict JSON output schema | Browser-held secrets |
 
-Excerpts can come from several meetings in one request, so approving summaries does not approve chat. The platform keeps only citations that point at excerpts it sent; an answer without valid citations is withheld. Saved turns are deleted with any meeting they drew on.
+Before sending, excerpts and earlier turns pass the chat guardrail layer: emails, phone numbers, and ID, case, card, and long account numbers are replaced with placeholders (names are not detected). Excerpts can come from several meetings in one request, so approving summaries does not approve chat. The platform keeps only citations that point at excerpts it sent; an answer without valid citations is withheld. Saved turns are deleted with any meeting they drew on.
 
 Request settings are the same as above: `store: false`, strict structured output, no tools.
 

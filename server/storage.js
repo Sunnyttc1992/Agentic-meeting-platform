@@ -55,7 +55,7 @@ const WRITER_METHODS = Object.freeze({
   audit: Object.freeze(['append']),
   commitments: Object.freeze(['replaceMeeting', 'clearMeeting']),
   outbox: Object.freeze(['enqueue']),
-  chat: Object.freeze(['appendTurn', 'clearForUser', 'clearMeeting']),
+  chat: Object.freeze(['appendTurn', 'clearForUser', 'clearMeeting', 'deleteTurn', 'purgeBefore']),
   embeddings: Object.freeze(['replaceMeeting', 'clearMeeting']),
 })
 
@@ -414,6 +414,8 @@ function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxE
     }
     chat.clearForUser = (userId) => repositories.chat.clearForUser(tenantId, userId)
     chat.clearMeeting = (meetingId) => repositories.chat.clearMeeting(tenantId, meetingId)
+    chat.deleteTurn = (userId, turnId) => repositories.chat.deleteTurn(tenantId, userId, turnId)
+    chat.purgeBefore = (cutoff) => repositories.chat.purgeBefore(tenantId, cutoff)
     embeddings.replaceMeeting = (meetingId, rows) => {
       assertTenantRecordList(normalized, rows, 'embedding')
       invariant(rows.every((row) => row.meetingId === meetingId), 'TENANT_SCOPE_VIOLATION', 'Embeddings must remain inside the active meeting scope', 403)
