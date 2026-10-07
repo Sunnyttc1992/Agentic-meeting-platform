@@ -52,7 +52,7 @@ test('transaction callbacks receive only sealed tenant capabilities and cannot e
     assert.equal(Object.getOwnPropertyDescriptor(transaction.meetings, 'get').get, undefined)
     assert.equal(Object.hasOwn(transaction.meetings.get, 'prototype'), false)
     assert.deepEqual(Object.getOwnPropertySymbols(transaction.meetings.get), [])
-    assert.deepEqual(Reflect.ownKeys(transaction), ['tenantId', 'meetings', 'knowledge', 'recordings', 'audit', 'commitments', 'outbox'])
+    assert.deepEqual(Reflect.ownKeys(transaction), ['tenantId', 'meetings', 'knowledge', 'recordings', 'audit', 'commitments', 'outbox', 'chat'])
     assert.deepEqual(Reflect.ownKeys(transaction.meetings), ['get', 'list', 'save'])
     assert.equal(Reflect.get(transaction, 'scope'), undefined)
     assert.equal(Object.isExtensible(transaction), false)
@@ -139,6 +139,7 @@ test('storage contract rejects structurally forged and mis-scoped tenant facades
     knowledge: { forMeeting: () => ({ segments: [], assertions: [] }), meetingIdsMatching: () => [] },
     recordings: { get: () => null, listForMeeting: () => [] },
     audit: { forMeeting: () => [] }, commitments: { query: () => [] }, outbox: { list: () => [] },
+    chat: { forUser: () => [] },
   })
   const invalid = createMeetingStorageBundle({
     scope: () => createTenantStorageFacade({ tenantId: 'different-tenant' }, inertCapabilities()),
@@ -150,6 +151,7 @@ test('storage contract rejects structurally forged and mis-scoped tenant facades
       audit: { ...inertCapabilities().audit, append: () => null },
       commitments: { ...inertCapabilities().commitments, replaceMeeting: () => null, clearMeeting: () => null },
       outbox: { ...inertCapabilities().outbox, enqueue: () => null },
+      chat: { ...inertCapabilities().chat, appendTurn: () => null, clearForUser: () => null, clearMeeting: () => null },
     }, { writable: true })),
   })
   await assert.rejects(async () => (await assertMeetingStorageContract(invalid)), { code: 'INVALID_STORAGE_ADAPTER' })

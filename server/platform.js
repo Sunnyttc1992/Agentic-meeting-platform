@@ -7,9 +7,13 @@ import { MicrosoftTeamsIntegrationAdapter } from './teams.js'
 import { assertMeetingStorageContract } from './storage.js'
 import { verifyAuditChain } from './audit.js'
 import { exportFilename, renderMeetingRecordMarkdown } from './meeting-export.js'
-import { InMemoryCommitmentRegistry } from './adapters/in-memory.js'
+import { InMemoryChatRepository, InMemoryCommitmentRegistry } from './adapters/in-memory.js'
+import { chatKeywords, keywordScore, MAX_CHAT_EXCERPT_TEXT, MAX_CHAT_EXCERPTS, MAX_CHAT_PROVIDER_HISTORY_TURNS, MAX_CHAT_QUESTION_LENGTH } from './chat.js'
 
 const PROCESSOR_FAILED = 'PROCESSOR_FAILED'
+const MAX_CHAT_CANDIDATE_MEETINGS = 25
+const MAX_CHAT_DISPLAY_TURNS = 50
+const formatChatTime = (ms) => { const seconds = Math.floor(ms / 1000); return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` }
 // One first attempt plus two retries. Bounded so a persistently failing
 // processor cannot be driven into an unbounded loop of model calls.
 const MAX_PROCESSING_ATTEMPTS = 3
@@ -83,6 +87,7 @@ const SAFE_AUDIT_ACTIONS = new Set([
   'meeting.create', 'meeting.list', 'consent.record', 'recording.preflight', 'recording.create', 'recording.upload',
   'recording.process', 'recording.process.retry', 'recording.process.complete', 'recording.status', 'recording.delete',
   'recording.authorization.status', 'recording.list',
+  'chat.ask', 'chat.history.read', 'chat.history.clear',
   'transcript.append', 'knowledge.assertions.add', 'knowledge.read', 'knowledge.search',
   'ai.retrieve', 'privacy-access.read', 'meeting.export', 'retention.expire',
   'commitment.query',
@@ -202,6 +207,12 @@ function scopedStorageRepositories(storage, ready) {
     outbox: Object.freeze({
       enqueue: (event) => write(event.tenantId, (transaction) => transaction.outbox.enqueue(event)),
       list: async (tenantId) => (await read(tenantId)).outbox.list(),
+    }),
+    chat: Object.freeze({
+      forUser: async (tenantId, userId) => (await read(tenantId)).chat.forUser(userId),
+      appendTurn: (turn) => write(turn.tenantId, (transaction) => transaction.chat.appendTurn(turn)),
+      clearForUser: (tenantId, userId) => write(tenantId, (transaction) => transaction.chat.clearForUser(userId)),
+      clearMeeting: (tenantId, meetingId) => write(tenantId, (transaction) => transaction.chat.clearMeeting(meetingId)),
     }),
   })
 }
@@ -434,7 +445,7 @@ function validatedManualAssertionEnvelope(value) {
 export class MeetingIntelligencePlatform {
   #tenantTransaction = null
 
-  constructor({ storage = null, meetings, knowledge, recordings, audit, policy, speechProcessor, commitments, teamsIntegration = new MicrosoftTeamsIntegrationAdapter(), clock = { now: () => new Date() }, authorizationTtlMs = 300000, maxRecordingBytes = 10485760, acceptedMimeTypes = RECORDING_MIME_TYPES, schedule = queueMicrotask }) {
+  constructor({ storage = null, meetings, knowledge, recordings, audit, policy, speechProcessor, commitments, chat, chatAnswerer = null, teamsIntegration = new MicrosoftTeamsIntegrationAdapter(), clock = { now: () => new Date() }, authorizationTtlMs = 300000, maxRecordingBytes = 10485760, acceptedMimeTypes = RECORDING_MIME_TYPES, schedule = queueMicrotask }) {
     // The `storage` bundle is the production persistence seam. Keeping the
     // individual repositories supported preserves existing local tests and
     // transports during the incremental migration, while a real deployment
@@ -453,6 +464,7 @@ export class MeetingIntelligencePlatform {
       recordings ??= scoped.recordings
       audit ??= scoped.audit
       commitments ??= scoped.commitments
+      chat ??= scoped.chat
       scopedOutbox = scoped.outbox
       // This is a private, tenant-first execution capability. It is used only
       // to make state transitions and their outbox rows one transaction when
@@ -495,9 +507,10 @@ export class MeetingIntelligencePlatform {
       })
     }
     commitments ??= new InMemoryCommitmentRegistry()
+    chat ??= new InMemoryChatRepository()
     invariant(meetings && knowledge && audit && commitments, 'INVALID_STORAGE_ADAPTER', 'Canonical meeting, knowledge, audit, and commitment repositories are required')
     const outbox = scopedOutbox
-    Object.assign(this, { meetings, knowledge, recordings, audit, policy, speechProcessor, commitments, outbox, teamsIntegration, clock, authorizationTtlMs, maxRecordingBytes, acceptedMimeTypes: Object.freeze([...acceptedMimeTypes]), schedule })
+    Object.assign(this, { meetings, knowledge, recordings, audit, policy, speechProcessor, commitments, chat, chatAnswerer, outbox, teamsIntegration, clock, authorizationTtlMs, maxRecordingBytes, acceptedMimeTypes: Object.freeze([...acceptedMimeTypes]), schedule })
   }
 
   #outboxKey(type, aggregateId, revision) {
@@ -1427,9 +1440,12 @@ export class MeetingIntelligencePlatform {
         if (transaction) {
           await knowledge.clearMeeting(meetingId)
           await commitments.clearMeeting(meetingId)
+          // Saved chat turns that drew on this meeting go with its content.
+          await transaction.chat.clearMeeting(meetingId)
         } else {
           await knowledge.clearMeeting(tenantId, meetingId)
           await commitments.clearMeeting(tenantId, meetingId)
+          await this.chat.clearMeeting(tenantId, meetingId)
         }
         // Deletion is the sole event after disposition. It contains no content
         // counts, recording IDs, source IDs, or classification, so consumers
@@ -1652,6 +1668,179 @@ export class MeetingIntelligencePlatform {
       if (sources.length === limit) break
     }
     return Object.freeze({ query: query.trim(), sources: Object.freeze(sources) })
+  }
+
+  // Meeting chat (RAG). Retrieval is lexical: every candidate meeting is
+  // authorized before its knowledge is read, and each decision is audited
+  // without content, exactly like retrieveMeetingContext. Only the selected
+  // excerpts, the question, and a few earlier readable turns reach the
+  // configured answer provider; its reply is untrusted, so only citations
+  // that point at excerpts actually sent are kept.
+  async askChat(input, body, correlationId = randomUUID()) {
+    const actor = principal(input)
+    const question = typeof body?.question === 'string' ? body.question.trim() : ''
+    invariant(question.length > 0 && question.length <= MAX_CHAT_QUESTION_LENGTH, 'INVALID_CHAT_QUESTION', `A question must be 1 to ${MAX_CHAT_QUESTION_LENGTH} characters`, 400)
+    return (await this.#audited(actor, correlationId, 'chat.ask', null, async () => {
+      // Reading history first also surfaces CHAT_NOT_MIGRATED before any
+      // excerpt could be sent to a provider.
+      const { turns: history } = await this.#readableChatTurns(actor)
+      const excerpts = await this.#chatExcerpts(actor, question, correlationId)
+      let status = 'no-sources'
+      let answer = null
+      let cited = []
+      let model = null
+      if (excerpts.length > 0 && !this.chatAnswerer) {
+        status = 'sources-only'
+        cited = excerpts
+      } else if (excerpts.length > 0) {
+        let result
+        try {
+          result = await this.chatAnswerer.answer({
+            question,
+            history: history.slice(-MAX_CHAT_PROVIDER_HISTORY_TURNS).map((turn) => ({ question: turn.question, answer: turn.answer ?? '' })),
+            excerpts: excerpts.map((item) => item.prompt),
+          })
+        } catch {
+          throw new DomainError('CHAT_ANSWER_FAILED', 'The answer could not be generated, and nothing was saved', 502)
+        }
+        const byLabel = new Map(excerpts.map((item) => [item.label, item]))
+        cited = (Array.isArray(result?.citations) ? result.citations : []).map((label) => byLabel.get(label)).filter(Boolean)
+        const text = typeof result?.answer === 'string' ? result.answer.trim() : ''
+        if (result?.answered !== true) { status = 'not-covered'; answer = text || null; cited = [] }
+        else if (cited.length === 0 || !text) { status = 'unsupported' }
+        else { status = 'answered'; answer = text }
+        model = typeof result?.model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(result.model) ? result.model : null
+      }
+      const turn = {
+        id: randomUUID(), tenantId: actor.tenantId, userId: actor.userId, createdAt: this.clock.now().toISOString(),
+        question, answer, status, provider: status === 'sources-only' || status === 'no-sources' ? null : (this.chatAnswerer?.providerName ?? null), model,
+        sources: cited.map((item) => ({ label: item.label, meetingId: item.meetingId, sourceId: item.sourceId })),
+        // Every meeting whose excerpts informed the turn, cited or not: losing
+        // access to any of them hides the turn, and deleting any deletes it.
+        meetingIds: [...new Set(excerpts.map((item) => item.meetingId))],
+      }
+      await this.chat.appendTurn(turn)
+      return Object.freeze({ turn: this.#chatTurnView(turn, new Map(excerpts.map((item) => [`${item.meetingId}:${item.sourceId}`, item]))) })
+    }))
+  }
+
+  async getChatHistory(input, correlationId = randomUUID()) {
+    const actor = principal(input)
+    return (await this.#audited(actor, correlationId, 'chat.history.read', null, async () => {
+      const { turns, meetings } = await this.#readableChatTurns(actor)
+      const recent = turns.slice(-MAX_CHAT_DISPLAY_TURNS)
+      const sources = new Map()
+      for (const meetingId of new Set(recent.flatMap((turn) => turn.sources.map((source) => source.meetingId)))) {
+        const knowledge = await this.knowledge.forMeeting(actor.tenantId, meetingId)
+        for (const item of [...(knowledge.segments ?? []), ...(knowledge.assertions ?? [])]) {
+          sources.set(`${meetingId}:${item.id}`, this.#chatSource(meetings.get(meetingId), item))
+        }
+      }
+      return Object.freeze({
+        provider: this.chatAnswerer?.providerName ?? null,
+        turns: Object.freeze(recent.map((turn) => this.#chatTurnView(turn, sources))),
+      })
+    }))
+  }
+
+  async clearChatHistory(input, correlationId = randomUUID()) {
+    const actor = principal(input)
+    return (await this.#audited(actor, correlationId, 'chat.history.clear', null, async () => {
+      await this.chat.clearForUser(actor.tenantId, actor.userId)
+      return Object.freeze({ cleared: true })
+    }))
+  }
+
+  // Saved turns are shown, and offered to a provider as context, only while
+  // the asker can still read every meeting the turn drew on.
+  async #readableChatTurns(actor) {
+    const meetings = new Map()
+    const readable = async (meetingId) => {
+      if (!meetings.has(meetingId)) {
+        const record = await this.meetings.get(actor.tenantId, meetingId)
+        meetings.set(meetingId, record && this.policy.meetingAccess({ principal: actor, meeting: record, now: this.clock.now() }).allowed ? record : null)
+      }
+      return meetings.get(meetingId) !== null
+    }
+    const turns = []
+    for (const turn of (await this.chat.forUser(actor.tenantId, actor.userId)) ?? []) {
+      if (turn?.tenantId !== actor.tenantId || turn.userId !== actor.userId || !Array.isArray(turn.meetingIds) || !Array.isArray(turn.sources)) continue
+      let visible = true
+      for (const meetingId of turn.meetingIds) if (!(await readable(meetingId))) { visible = false; break }
+      if (visible) turns.push(turn)
+    }
+    return { turns, meetings }
+  }
+
+  async #chatExcerpts(actor, question, correlationId) {
+    const keywords = chatKeywords(question)
+    if (keywords.length === 0) return []
+    const candidates = new Set()
+    for (const keyword of keywords) for (const meetingId of (await this.knowledge.meetingIdsMatching(actor.tenantId, keyword))) candidates.add(meetingId)
+    const scored = []
+    for (const meetingId of [...candidates].slice(0, MAX_CHAT_CANDIDATE_MEETINGS)) {
+      const meetingRecord = await this.meetings.get(actor.tenantId, meetingId)
+      if (!meetingRecord) continue
+      const decision = this.policy.meetingAccess({ principal: actor, meeting: meetingRecord, now: this.clock.now() })
+      await this.#audit({ correlationId, principal: actor, action: 'ai.retrieve', meetingId, outcome: decision.allowed ? 'allowed' : 'denied', reason: decision.allowed ? null : decision.code })
+      if (!decision.allowed) continue
+      const knowledge = await this.knowledge.forMeeting(actor.tenantId, meetingId)
+      for (const segment of knowledge.segments ?? []) {
+        const score = keywordScore(segment?.text ?? '', keywords)
+        if (score > 0) scored.push({ meetingRecord, item: segment, score })
+      }
+      for (const assertion of knowledge.assertions ?? []) {
+        if (!isBoundedKnowledgeCitationList(assertion?.citations)) continue
+        // Decisions, actions, and risks are the densest evidence: rank them
+        // just above a transcript line with the same keyword matches.
+        const score = keywordScore(assertion?.text ?? '', keywords)
+        if (score > 0) scored.push({ meetingRecord, item: assertion, score: score + 0.5 })
+      }
+    }
+    scored.sort((a, b) => b.score - a.score)
+    const letters = new Map()
+    return scored.slice(0, MAX_CHAT_EXCERPTS).map(({ meetingRecord, item }, index) => {
+      if (!letters.has(meetingRecord.id)) letters.set(meetingRecord.id, String.fromCharCode(65 + (letters.size % 26)))
+      const source = this.#chatSource(meetingRecord, item)
+      const label = `E${index + 1}`
+      return {
+        ...source, label,
+        prompt: {
+          label, meetingLetter: letters.get(meetingRecord.id), meetingDate: source.meetingDate ?? 'date unknown', kind: source.kind,
+          at: Number.isFinite(source.startMs) ? formatChatTime(source.startMs) : null,
+          speaker: source.kind === 'transcript' ? (/^SPEAKER_\d{2}$/.test(item.diarizationLabel ?? '') ? item.diarizationLabel : 'unattributed') : null,
+          text: source.text,
+        },
+      }
+    })
+  }
+
+  // A display-safe source: meeting title for the asker's own screen, never
+  // provenance, citations, or identity metadata.
+  #chatSource(meetingRecord, item) {
+    const isSegment = !Object.hasOwn(item ?? {}, 'kind')
+    const text = String(item?.text ?? '').replace(/\s+/g, ' ').trim()
+    return {
+      meetingId: meetingRecord.id, sourceId: item.id,
+      meetingTitle: typeof meetingRecord.title === 'string' && meetingRecord.title.trim() ? meetingRecord.title : 'Untitled meeting',
+      meetingDate: typeof meetingRecord.createdAt === 'string' ? meetingRecord.createdAt.slice(0, 10) : null,
+      meetingCreatedAt: typeof meetingRecord.createdAt === 'string' ? meetingRecord.createdAt : null,
+      kind: isSegment ? 'transcript' : item.kind,
+      startMs: isSegment && Number.isFinite(item.startMs) ? item.startMs : null,
+      text: text.length > MAX_CHAT_EXCERPT_TEXT ? `${text.slice(0, MAX_CHAT_EXCERPT_TEXT - 1)}…` : text,
+    }
+  }
+
+  #chatTurnView(turn, sources) {
+    return Object.freeze({
+      id: turn.id, createdAt: turn.createdAt, question: turn.question, answer: turn.answer ?? null, status: turn.status,
+      provider: turn.provider ?? null, model: turn.model ?? null,
+      // A source whose content was replaced or removed is simply not shown.
+      sources: Object.freeze(turn.sources.map((source) => {
+        const resolved = sources.get(`${source.meetingId}:${source.sourceId}`)
+        return resolved ? Object.freeze({ label: source.label, meetingId: resolved.meetingId, meetingTitle: resolved.meetingTitle, meetingCreatedAt: resolved.meetingCreatedAt, kind: resolved.kind, startMs: resolved.startMs, text: resolved.text }) : null
+      }).filter(Boolean)),
+    })
   }
 
   async queryCommitments(input, query = '', correlationId = randomUUID()) {

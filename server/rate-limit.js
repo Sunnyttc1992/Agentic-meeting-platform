@@ -18,7 +18,7 @@ export function rateLimitClass(method, pathname) {
   if (method === 'POST' && /^\/meetings\/[^/]+\/recording\/preflight$/.test(pathname)) return 'capture'
   if (method !== 'GET' && /^\/meetings\/[^/]+\/recordings(\/[^/]+\/bytes)?$/.test(pathname)) return 'capture'
   if (method === 'GET' && /^\/meetings\/[^/]+\/export$/.test(pathname)) return 'export'
-  if (pathname === '/ai/retrieve') return 'ai'
+  if (pathname === '/ai/retrieve' || (method === 'POST' && pathname === '/chat/messages')) return 'ai'
   return 'standard'
 }
 

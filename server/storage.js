@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { invariant } from './errors.js'
 import {
   InMemoryAppendOnlyAudit,
+  InMemoryChatRepository,
   InMemoryCommitmentRegistry,
   InMemoryKnowledgeRepository,
   InMemoryMeetingRepository,
@@ -32,7 +33,7 @@ export const CANONICAL_DATA_SETS = Object.freeze([
 const STORAGE_BUNDLES = new WeakSet()
 const TENANT_FACADES = new WeakSet()
 const FACADE_REPOSITORIES = Object.freeze([
-  'meetings', 'knowledge', 'recordings', 'audit', 'commitments', 'outbox',
+  'meetings', 'knowledge', 'recordings', 'audit', 'commitments', 'outbox', 'chat',
 ])
 
 const READER_METHODS = Object.freeze({
@@ -42,6 +43,7 @@ const READER_METHODS = Object.freeze({
   audit: Object.freeze(['forMeeting', 'chain']),
   commitments: Object.freeze(['query']),
   outbox: Object.freeze(['list']),
+  chat: Object.freeze(['forUser']),
 })
 
 const WRITER_METHODS = Object.freeze({
@@ -51,6 +53,7 @@ const WRITER_METHODS = Object.freeze({
   audit: Object.freeze(['append']),
   commitments: Object.freeze(['replaceMeeting', 'clearMeeting']),
   outbox: Object.freeze(['enqueue']),
+  chat: Object.freeze(['appendTurn', 'clearForUser', 'clearMeeting']),
 })
 
 export function tenantScope(input) {
@@ -351,6 +354,10 @@ function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxE
   const outbox = {
     list: () => repositories.outbox.list(normalized),
   }
+  // Saved chat turns are agent memory: always read and cleared per user.
+  const chat = {
+    forUser: (userId) => repositories.chat.forUser(tenantId, userId),
+  }
 
   if (writable) {
     meetings.save = (record) => {
@@ -394,6 +401,12 @@ function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxE
       return repositories.commitments.replaceMeeting(tenantId, meetingId, knowledgeForMeeting)
     }
     commitments.clearMeeting = (meetingId) => repositories.commitments.clearMeeting(tenantId, meetingId)
+    chat.appendTurn = (turn) => {
+      assertTenantRecord(normalized, turn, 'chat turn')
+      return repositories.chat.appendTurn(turn)
+    }
+    chat.clearForUser = (userId) => repositories.chat.clearForUser(tenantId, userId)
+    chat.clearMeeting = (meetingId) => repositories.chat.clearMeeting(tenantId, meetingId)
     outbox.enqueue = (event) => {
       assertTenantRecord(normalized, event, 'outbox event')
       // The injector exists solely to exercise the prototype transaction
@@ -413,6 +426,7 @@ function tenantFacadeOver(repositories, scope, { writable = false, beforeOutboxE
     audit,
     commitments,
     outbox,
+    chat,
   }, { writable })
 }
 
@@ -453,6 +467,7 @@ export function createInMemoryMeetingStorage({ shouldFailOutboxEnqueue = null, s
     audit: new InMemoryAppendOnlyAudit(),
     commitments: new InMemoryCommitmentRegistry(),
     outbox: new InMemoryOutboxRepository(),
+    chat: new InMemoryChatRepository(),
   }
   return composeRepositoryStorage({
     kind: 'in-memory-prototype',

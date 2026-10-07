@@ -7,7 +7,16 @@ import { invariant } from '../errors.js'
 // receives only the privileges below: row-level security keyed to
 // \`app.tenant_id\` is then enforced by the database itself, independently of
 // the application's own tenant checks.
-const TENANT_TABLES = Object.freeze(['meetings', 'recordings', 'recording_content', 'transcript_segments', 'knowledge_assertions', 'commitments', 'audit_events', 'outbox_events'])
+// The first migration's tables are frozen: its SQL is generated from this list
+// and must never change once applied. Later tables are added per migration.
+const V1_TENANT_TABLES = Object.freeze(['meetings', 'recordings', 'recording_content', 'transcript_segments', 'knowledge_assertions', 'commitments', 'audit_events', 'outbox_events'])
+const TENANT_TABLES = Object.freeze([...V1_TENANT_TABLES, 'chat_turns'])
+const rowLevelSecurity = (table) => `
+ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON ${table}
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));`
 const MIGRATION_LOCK = 7_274_201
 
 export const POSTGRES_MIGRATIONS = Object.freeze([
@@ -57,15 +66,22 @@ CREATE TRIGGER audit_events_append_only BEFORE UPDATE OR DELETE ON audit_events
   FOR EACH ROW EXECUTE FUNCTION meeting_ledger_reject_audit_change();
 CREATE TRIGGER audit_events_no_truncate BEFORE TRUNCATE ON audit_events
   FOR EACH STATEMENT EXECUTE FUNCTION meeting_ledger_reject_audit_change();
-${TENANT_TABLES.map((table) => `
-ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;
-ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant_isolation ON ${table}
-  USING (tenant_id = current_setting('app.tenant_id', true))
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));`).join('\n')}
+${V1_TENANT_TABLES.map(rowLevelSecurity).join('\n')}
+`,
+  }),
+  Object.freeze({
+    version: '002_chat_turns',
+    sql: `
+CREATE TABLE chat_turns (seq bigserial PRIMARY KEY, tenant_id text NOT NULL, user_id text NOT NULL, doc jsonb NOT NULL);
+CREATE INDEX chat_turns_by_user ON chat_turns (tenant_id, user_id, seq);
+${rowLevelSecurity('chat_turns')}
 `,
   }),
 ])
+
+// The oldest schema this server still serves. A database on it works, except
+// that saved chat reports CHAT_NOT_MIGRATED until the migrations are run.
+const MINIMUM_SERVING_MIGRATION = '001_meeting_ledger_v1'
 
 export const LATEST_POSTGRES_MIGRATION = POSTGRES_MIGRATIONS.at(-1).version
 
@@ -123,7 +139,9 @@ export async function assertPostgresSchemaCurrent(client) {
   } catch {
     // No migrations table (or no access to it) means an unmigrated database.
   }
-  invariant(versions.length > 0 && versions.at(-1) === LATEST_POSTGRES_MIGRATION && versions.every((version) => POSTGRES_MIGRATIONS.some((migration) => migration.version === version)),
+  const known = POSTGRES_MIGRATIONS.map((migration) => migration.version)
+  const servable = known.slice(known.indexOf(MINIMUM_SERVING_MIGRATION))
+  invariant(versions.length > 0 && servable.includes(versions.at(-1)) && versions.every((version, index) => version === known[index]),
     'UNSUPPORTED_STORAGE_MODEL', 'The database schema does not match this server; run the database migrations first', 500)
 }
 

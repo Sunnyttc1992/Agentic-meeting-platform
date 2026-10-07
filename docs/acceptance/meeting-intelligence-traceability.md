@@ -160,11 +160,11 @@ Assessed by the coding agent from the automated test suite (191 tests), not by t
 | SEC-06 | done | none | Watermarking, link expiry |
 | SEC-07 | done | none | none at M |
 | SEC-08 | partial | Audit-dependent transitions roll back; PostgreSQL audio reads/writes fail closed if the configured key file is absent or changed | KMS/HSM integration and operational resilience exercise |
-| AI-01 | done | none | none at M |
-| AI-02 | done | none | none at M |
+| AI-01 | done | Meeting chat authorizes every candidate meeting before reading it (`server/chat.test.js`, removing the check fails it) | none at M |
+| AI-02 | done | A canary in an unreadable meeting never reaches the chat provider, answer, sources, or history | Red-team review of the live chat |
 | AI-03 | done | none | Model/pipeline version on every claim |
 | AI-04 | none | none | No agent tools exist yet |
-| AI-05 | none | none | No agent memory exists yet |
+| AI-05 | done | Saved chat turns are tenant- and user-scoped, read only while every source meeting is readable, purged with the meeting (in-memory, SQLite including the raw file, PostgreSQL with RLS) | Retention policy for chat history itself |
 | AI-06 | done | none | none at M |
 
 ## Current verdict

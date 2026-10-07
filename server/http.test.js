@@ -416,3 +416,19 @@ test('Microsoft Teams import handoff is consent-gated and refuses URLs or creden
     for (const forbidden of ['teams_123456', 'ENTRA-TOKEN-CANARY', 'accessToken']) assert.equal(serialized.includes(forbidden), false)
   })
 })
+
+test('chat endpoints validate strictly, keep history per user, and clear it', async () => {
+  await withServer({}, async ({ base }) => {
+    for (const body of [{}, { question: 'x', extra: true }, 'not json']) {
+      assert.equal((await post(base, '/chat/messages', participant, body)).response.status, 400)
+    }
+    const asked = await post(base, '/chat/messages', participant, { question: 'What did we decide?' })
+    assert.equal(asked.response.status, 200)
+    assert.equal(asked.body.turn.status, 'no-sources')
+    assert.equal((await get(base, '/chat/messages', participant)).body.turns.length, 1)
+    assert.deepEqual((await get(base, '/chat/messages', organizer)).body.turns, [])
+    const cleared = await fetch(`${base}/chat/messages`, { method: 'DELETE', headers: headers(participant) })
+    assert.equal(cleared.status, 200)
+    assert.deepEqual((await get(base, '/chat/messages', participant)).body.turns, [])
+  })
+})

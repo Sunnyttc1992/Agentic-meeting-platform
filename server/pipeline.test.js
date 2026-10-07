@@ -388,6 +388,7 @@ test('the meeting API is reachable only from loopback with a loopback Host heade
   assert.equal(isLoopbackRequest(request('192.168.1.20', 'localhost:4173')), false, 'LAN clients are refused')
   assert.equal(isLoopbackRequest(request('127.0.0.1', 'evil.example:4173')), false, 'DNS rebinding is refused')
   assert.equal(isLoopbackRequest(request('127.0.0.1', undefined)), false)
+  assert.equal(isMeetingApiPath('/chat/messages'), true, 'chat is part of the loopback-only API')
   for (const path of ['/meetings/meeting-1/recordings', '/commitments', '/audit/integrity', '/integrations/microsoft-teams/readiness', '/pipeline/readiness']) assert.equal(isMeetingApiPath(path), true)
   assert.equal(isMeetingApiPath('/assets/index.js'), false)
 })

@@ -81,6 +81,18 @@ export function commitmentMatchesQuery(row, query = '') {
   return !term || [row.text, row.ownerId ?? '', row.status, row.deadline ?? ''].some((field) => field.toLocaleLowerCase().includes(term))
 }
 
+// Saved chat turns, one record per question and answer. A turn names every
+// meeting it drew on, so deleting a meeting's content deletes those turns.
+export class InMemoryChatRepository {
+  #turns = []
+  appendTurn(turn) { this.#turns.push(structuredClone(turn)); return structuredClone(turn) }
+  forUser(tenantId, userId) { return this.#turns.filter((turn) => turn.tenantId === tenantId && turn.userId === userId).map((turn) => structuredClone(turn)) }
+  clearForUser(tenantId, userId) { this.#turns = this.#turns.filter((turn) => turn.tenantId !== tenantId || turn.userId !== userId) }
+  clearMeeting(tenantId, meetingId) { this.#turns = this.#turns.filter((turn) => turn.tenantId !== tenantId || !turn.meetingIds.includes(meetingId)) }
+  snapshot() { return structuredClone(this.#turns) }
+  restore(snapshot) { this.#turns = structuredClone(snapshot) }
+}
+
 // The platform replaces a meeting's rows from canonical knowledge after every
 // publication, so replaying a job cannot create a second commitment.
 export class InMemoryCommitmentRegistry {

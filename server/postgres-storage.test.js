@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { PGlite } from '@electric-sql/pglite'
 import { FixedClock } from './adapters/in-memory.js'
 import { openPostgresStorage } from './adapters/postgres.js'
-import { assertPostgresSchemaCurrent, LATEST_POSTGRES_MIGRATION, migratePostgres } from './adapters/postgres-schema.js'
+import { assertPostgresSchemaCurrent, migratePostgres, POSTGRES_MIGRATIONS } from './adapters/postgres-schema.js'
 import { verifyAuditChain } from './audit.js'
 import { ClaudeMeetingIntelligence } from './intelligence.js'
 import { MeetingIntelligencePlatform } from './platform.js'
@@ -53,6 +53,8 @@ async function openDatabase(dataDir = undefined, { migrate = true } = {}) {
   return { db, connect, asAdmin, app: admin, close: () => db.close() }
 }
 
+const chatAnswerer = { providerName: 'Test provider', answer: async ({ excerpts }) => ({ answer: 'Keep the phased rollout.', answered: true, citations: [excerpts[0].label], model: 'test-model' }) }
+
 function platformOn(storage, { schedule = (job) => job() } = {}) {
   const client = { beta: { messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(REPLY) }] }) } } }
   return new MeetingIntelligencePlatform({
@@ -61,7 +63,7 @@ function platformOn(storage, { schedule = (job) => job() } = {}) {
       transcriber: { transcribe: async () => [{ startMs: 0, endMs: 3000, text: 'Rollout stays phased.' }, { startMs: 3000, endMs: 6000, text: 'Sam sends the security findings by October 20.' }] },
       intelligence: new ClaudeMeetingIntelligence({ client }),
     }),
-    acceptedMimeTypes: [SPEECH_WAV_MIME_TYPE], schedule,
+    acceptedMimeTypes: [SPEECH_WAV_MIME_TYPE], schedule, chatAnswerer,
   })
 }
 
@@ -132,6 +134,45 @@ test('a second recording keeps the first recording\'s transcript and actions in 
     assert.deepEqual(after.segments, before.segments)
     assert.deepEqual(after.assertions, before.assertions)
     assert.equal((await platform.queryCommitments(sam, '')).commitments.length, 2)
+  } finally { await database.close() }
+})
+
+test('saved chat is stored per tenant and user in PostgreSQL and deleted with its meeting', async () => {
+  const database = await openDatabase()
+  try {
+    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR })
+    const platform = platformOn(storage)
+    await platform.startProcessing(alex, 'meeting-1', await seedAndUpload(platform))
+    await settle()
+    assert.equal((await platform.askChat(sam, { question: 'phased rollout?' })).turn.status, 'answered')
+    assert.equal((await platformOn(storage).getChatHistory(sam)).turns.length, 1, 'history is durable')
+    assert.deepEqual((await platform.getChatHistory(alex)).turns, [])
+    assert.deepEqual(await storage.scope({ tenantId: 'southstar' }).chat.forUser('sam'), [], 'row-level security hides other tenants')
+    await platform.deleteMeetingContent(alex, 'meeting-1')
+    assert.deepEqual((await platform.getChatHistory(sam)).turns, [])
+  } finally { await database.close() }
+})
+
+test('a database on the first schema still serves meetings, and chat asks for the migration until it runs', async () => {
+  const database = await openDatabase(undefined, { migrate: false })
+  try {
+    await database.asAdmin(async (admin) => {
+      await admin.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())')
+      await admin.exec(POSTGRES_MIGRATIONS[0].sql)
+      await admin.query('INSERT INTO schema_migrations (version) VALUES ($1)', [POSTGRES_MIGRATIONS[0].version])
+      await admin.exec(`GRANT SELECT, INSERT, UPDATE, DELETE ON meetings, recordings, recording_content, transcript_segments, knowledge_assertions, commitments, outbox_events TO ${APP_ROLE}; GRANT SELECT, INSERT ON audit_events TO ${APP_ROLE}; GRANT SELECT ON schema_migrations TO ${APP_ROLE}; GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO ${APP_ROLE};`)
+    })
+    await assertPostgresSchemaCurrent(database.app)
+    const { storage } = openPostgresStorage({ connect: database.connect, audioKey: AUDIO_KEY, recordingKeyDirectory: KEY_DIR })
+    const platform = platformOn(storage)
+    await platform.startProcessing(alex, 'meeting-1', await seedAndUpload(platform))
+    await settle()
+    await assert.rejects(platform.askChat(sam, { question: 'phased rollout?' }), { code: 'CHAT_NOT_MIGRATED' })
+    await assert.rejects(platform.getChatHistory(sam), { code: 'CHAT_NOT_MIGRATED' })
+    await platform.deleteMeetingContent(alex, 'meeting-1')
+
+    await database.asAdmin((admin) => migratePostgres(admin, { appRole: APP_ROLE }))
+    assert.deepEqual((await platform.getChatHistory(sam)).turns, [], 'chat works once migrated')
   } finally { await database.close() }
 })
 
@@ -280,7 +321,7 @@ test('migrations are idempotent, and the server refuses an unmigrated or newer d
   try {
     await assert.rejects(assertPostgresSchemaCurrent(fresh.app), { code: 'UNSUPPORTED_STORAGE_MODEL' }, 'unmigrated database is refused')
     await fresh.asAdmin(async (admin) => {
-      assert.deepEqual((await migratePostgres(admin, { appRole: APP_ROLE })).applied, [LATEST_POSTGRES_MIGRATION])
+      assert.deepEqual((await migratePostgres(admin, { appRole: APP_ROLE })).applied, POSTGRES_MIGRATIONS.map((migration) => migration.version))
       assert.deepEqual((await migratePostgres(admin, { appRole: APP_ROLE })).applied, [], 'a second run applies nothing')
       await admin.query("INSERT INTO schema_migrations (version) VALUES ('999_from_a_newer_server')")
       await assert.rejects(migratePostgres(admin), { code: 'UNSUPPORTED_STORAGE_MODEL' })

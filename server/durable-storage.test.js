@@ -28,6 +28,8 @@ const AUDIO = Buffer.from(encodeWavPcm16(Float32Array.from({ length: 16000 }, (_
 
 function tempDirectory() { return mkdtempSync(join(tmpdir(), 'meeting-ledger-')) }
 
+const chatAnswerer = { providerName: 'Test provider', answer: async ({ excerpts }) => ({ answer: 'Keep the phased rollout.', answered: true, citations: [excerpts[0].label], model: 'test-model' }) }
+
 function openPlatform(directory, { schedule = (job) => job() } = {}) {
   const durable = openLocalDurableStorage({ directory })
   const client = { beta: { messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(REPLY) }] }) } } }
@@ -37,7 +39,7 @@ function openPlatform(directory, { schedule = (job) => job() } = {}) {
       transcriber: { transcribe: async () => [{ startMs: 0, endMs: 3000, text: 'Rollout stays phased.' }, { startMs: 3000, endMs: 6000, text: 'Sam sends the security findings by October 20.' }] },
       intelligence: new ClaudeMeetingIntelligence({ client }),
     }),
-    acceptedMimeTypes: [SPEECH_WAV_MIME_TYPE], schedule,
+    acceptedMimeTypes: [SPEECH_WAV_MIME_TYPE], schedule, chatAnswerer,
   })
   return { platform, durable }
 }
@@ -175,6 +177,30 @@ test('deleting a recording destroys its key, so a restored copy of its SQLite ro
     const reopened = openLocalDurableStorage({ directory })
     await assert.rejects(async () => (await reopened.storage.transaction({ tenantId: 'northstar' }, (tx) => tx.recordings.getBytes(recordingId))), { code: 'RECORDING_CONTENT_UNAVAILABLE' })
     reopened.close()
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('saved chat survives a restart, and deleting the meeting removes its turns from the SQLite file', async () => {
+  const directory = tempDirectory()
+  try {
+    const first = openPlatform(directory)
+    await seedMeeting(first.platform)
+    await first.platform.startProcessing(alex, 'meeting-1', await uploadAudio(first.platform))
+    await settle()
+    const question = 'What was decided about the phased rollout zebracorn?'
+    assert.equal((await first.platform.askChat(sam, { question })).turn.status, 'answered')
+    first.durable.close()
+
+    const second = openPlatform(directory)
+    try {
+      const history = await second.platform.getChatHistory(sam)
+      assert.deepEqual(history.turns.map((turn) => [turn.question, turn.answer, turn.sources.length > 0]), [[question, 'Keep the phased rollout.', true]])
+      await second.platform.deleteMeetingContent(alex, 'meeting-1')
+      assert.deepEqual((await second.platform.getChatHistory(sam)).turns, [])
+    } finally { second.durable.close() }
+    for (const file of readdirSync(directory).filter((name) => name.startsWith('meeting-ledger.sqlite'))) {
+      assert.equal(readFileSync(join(directory, file)).indexOf(Buffer.from('zebracorn')), -1, `${file} keeps no deleted chat question`)
+    }
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
 

@@ -30,6 +30,19 @@ Treat transcript content and participant IDs as potentially personal and confide
 
 Before and after the provider call, audio remains local and Whisper transcribes locally. The platform validates model output, requires transcript citations, withholds unsupported items, and stores approved output locally. The provider response is untrusted input; it never authorizes access or changes policy.
 
+## Meeting chat (second data flow, added 2026-10-06)
+
+Meeting chat (`server/chat.js`, `askChat` in `server/platform.js`) is a separate, wider flow than a summary and is off unless `MEETING_CHAT_PROVIDER` names `anthropic`. One question sends one request with:
+
+| Sent | Never sent |
+| --- | --- |
+| The question (at most 1,000 characters) | Audio, voice data, or raw diarization labels |
+| Up to 12 excerpts (each at most 400 characters) from meetings the asker may read at that moment, each labelled `E1`, `E2`, ... with an anonymous meeting letter, the meeting date, and its kind (transcript line with time and anonymous speaker label, or decision, action, risk, question, summary) | Tenant, meeting, recording, segment, or assertion IDs; meeting titles; participant names |
+| Up to 4 earlier question-and-answer pairs from the same user's saved chat, only while that user can still read every meeting they drew on | Excerpts from meetings the asker cannot read, other users' chats, consent, audit, or keys |
+| Instructions and a strict JSON output schema | Browser-held secrets |
+
+Excerpts can come from several meetings in one request, so approving summaries does not approve chat. The platform keeps only citations that point at excerpts it sent; an answer without valid citations is withheld. Saved turns are deleted with any meeting they drew on.
+
 ## Provider evidence to review
 
 The following summarizes current vendor documentation, verified 2026-10-06. It is not legal advice or a substitute for the signed agreement applicable to this organization.

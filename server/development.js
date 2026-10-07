@@ -9,6 +9,7 @@ import { LocalWhisperTranscriber } from './transcription.js'
 import { LocalPyannoteDiarizer } from './diarization.js'
 import { ClaudeMeetingIntelligence } from './intelligence.js'
 import { OpenAIMeetingIntelligence } from './intelligence-openai.js'
+import { ClaudeChatAnswerer, OpenAIChatAnswerer } from './chat.js'
 import { RECORDING_MIME_TYPES, SPEECH_WAV_MIME_TYPE } from '../src/recordingFormats.js'
 
 // 16 kHz mono 16-bit WAV is 32 KB/s: 160 MB holds roughly 83 minutes.
@@ -48,6 +49,24 @@ export function summaryProvider(env = process.env) {
   return hasOpenAICredentials(env) ? 'openai' : 'none'
 }
 
+// Meeting chat sends excerpts from several meetings to a provider, a wider
+// flow than a summary, so it is off unless MEETING_CHAT_PROVIDER names one
+// ('openai' or 'anthropic') whose credentials exist. Otherwise chat still
+// finds and cites matching excerpts locally, without writing an answer.
+export function chatProvider(env = process.env) {
+  const chosen = String(env.MEETING_CHAT_PROVIDER ?? '').trim().toLowerCase()
+  if (chosen === 'openai') return hasOpenAICredentials(env) ? 'openai' : 'none'
+  if (chosen === 'anthropic') return hasAnthropicCredentials(env) ? 'anthropic' : 'none'
+  return 'none'
+}
+
+export function createChatAnswerer(env = process.env) {
+  const provider = chatProvider(env)
+  if (provider === 'openai') return new OpenAIChatAnswerer()
+  if (provider === 'anthropic') return new ClaudeChatAnswerer()
+  return null
+}
+
 function createMeetingIntelligence(env) {
   const provider = summaryProvider(env)
   if (provider === 'openai') return new OpenAIMeetingIntelligence()
@@ -66,9 +85,9 @@ export function createSpeechProcessor({ mode = process.env.MEETING_PROCESSOR ?? 
 
 // `storage` defaults to in-memory so tests never touch disk; the local servers
 // pass durable SQLite storage (see server/adapters/sqlite.js).
-export async function createDevelopmentPlatform({ speechProcessor = createSpeechProcessor(), storage = createInMemoryMeetingStorage() } = {}) {
+export async function createDevelopmentPlatform({ speechProcessor = createSpeechProcessor(), storage = createInMemoryMeetingStorage(), chatAnswerer = createChatAnswerer() } = {}) {
   const platform = new MeetingIntelligencePlatform({
-    storage, speechProcessor,
+    storage, speechProcessor, chatAnswerer,
     policy: new PolicyEngine({ retentionPolicies: DEVELOPMENT_RETENTION_POLICIES }),
     maxRecordingBytes: LOCAL_MAX_RECORDING_BYTES,
     // The real pipeline transcribes only verified 16 kHz mono WAV.

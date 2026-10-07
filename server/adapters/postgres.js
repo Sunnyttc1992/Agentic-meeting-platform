@@ -195,6 +195,31 @@ export function openPostgresStorage({ connect, audioKey, audioKeyProvider = null
     query: (tenantId, query = '') => inTenant(tenantId, async (client) => docs(await client.query('SELECT doc FROM commitments WHERE tenant_id = $1 ORDER BY row_seq', [tenantId])).filter((row) => commitmentMatchesQuery(row, query))),
   }
 
+  // Saved chat turns. A database still on the first schema version has no
+  // chat table: reads and writes then report CHAT_NOT_MIGRATED, while the
+  // deletion paths have nothing to delete and succeed.
+  const chatTable = async (client) => (await client.query("SELECT to_regclass('public.chat_turns') IS NOT NULL AS present")).rows[0]?.present === true
+  const requireChatTable = async (client) => {
+    if (!(await chatTable(client))) throw new DomainError('CHAT_NOT_MIGRATED', 'Saved chat needs a database migration: run npm run db:migrate', 503)
+  }
+  const chat = {
+    appendTurn: (turn) => inTenant(turn.tenantId, async (client) => {
+      await requireChatTable(client)
+      await client.query('INSERT INTO chat_turns (tenant_id, user_id, doc) VALUES ($1, $2, $3::jsonb)', [turn.tenantId, turn.userId, json(turn)])
+      return structuredClone(turn)
+    }),
+    forUser: (tenantId, userId) => inTenant(tenantId, async (client) => {
+      await requireChatTable(client)
+      return docs(await client.query('SELECT doc FROM chat_turns WHERE tenant_id = $1 AND user_id = $2 ORDER BY seq', [tenantId, userId]))
+    }),
+    clearForUser: (tenantId, userId) => inTenant(tenantId, async (client) => {
+      if (await chatTable(client)) await client.query('DELETE FROM chat_turns WHERE tenant_id = $1 AND user_id = $2', [tenantId, userId])
+    }),
+    clearMeeting: (tenantId, meetingId) => inTenant(tenantId, async (client) => {
+      if (await chatTable(client)) await client.query("DELETE FROM chat_turns WHERE tenant_id = $1 AND doc -> 'meetingIds' ? $2", [tenantId, meetingId])
+    }),
+  }
+
   const outbox = {
     enqueue: (scope, event) => {
       const stored = canonicalOutboxEvent(scope, event)
@@ -211,7 +236,7 @@ export function openPostgresStorage({ connect, audioKey, audioKeyProvider = null
 
   const storage = composeRepositoryStorage({
     kind: 'postgresql',
-    repositories: { meetings, knowledge, recordings, audit, commitments, outbox },
+    repositories: { meetings, knowledge, recordings, audit, commitments, outbox, chat },
     runAtomically: (work, scope) => transaction(scope.tenantId, () => work()),
   })
   return Object.freeze({ storage, close })

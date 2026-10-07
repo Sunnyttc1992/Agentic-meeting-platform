@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS audit_events (tenant_id TEXT NOT NULL, sequence INTEG
 CREATE TRIGGER IF NOT EXISTS audit_events_no_update BEFORE UPDATE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_events_no_delete BEFORE DELETE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;
 CREATE TABLE IF NOT EXISTS outbox (tenant_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant_id, idempotency_key));
+CREATE TABLE IF NOT EXISTS chat_turns (seq INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, doc TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS chat_turns_by_user ON chat_turns (tenant_id, user_id, seq);
 `
 
 const parse = (row) => (row ? JSON.parse(row.doc) : null)
@@ -165,6 +167,22 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
     query: (tenantId, query = '') => parseAll(sql('SELECT doc FROM commitments WHERE tenant_id = ? ORDER BY rowid').all(tenantId)).filter((row) => commitmentMatchesQuery(row, query)),
   }
 
+  const chat = {
+    appendTurn(turn) {
+      sql('INSERT INTO chat_turns (tenant_id, user_id, doc) VALUES (?, ?, ?)').run(turn.tenantId, turn.userId, JSON.stringify(turn))
+      return structuredClone(turn)
+    },
+    forUser: (tenantId, userId) => parseAll(sql('SELECT doc FROM chat_turns WHERE tenant_id = ? AND user_id = ? ORDER BY seq').all(tenantId, userId)),
+    clearForUser(tenantId, userId) {
+      sql('DELETE FROM chat_turns WHERE tenant_id = ? AND user_id = ?').run(tenantId, userId)
+      purgeDeletedContent()
+    },
+    clearMeeting(tenantId, meetingId) {
+      sql("DELETE FROM chat_turns WHERE tenant_id = ? AND EXISTS (SELECT 1 FROM json_each(chat_turns.doc, '$.meetingIds') WHERE json_each.value = ?)").run(tenantId, meetingId)
+      purgeDeletedContent()
+    },
+  }
+
   const outbox = {
     enqueue(scope, event) {
       const stored = canonicalOutboxEvent(scope, event)
@@ -198,7 +216,7 @@ export function openLocalDurableStorage({ directory, databaseFile = 'meeting-led
 
   const storage = composeRepositoryStorage({
     kind: 'local-sqlite',
-    repositories: { meetings, knowledge, recordings, audit, commitments, outbox },
+    repositories: { meetings, knowledge, recordings, audit, commitments, outbox, chat },
     runAtomically,
   })
   return Object.freeze({ storage, close: () => db.close() })

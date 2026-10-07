@@ -7,7 +7,7 @@ const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]'])
 
 export function isMeetingApiPath(pathname) {
   return pathname === '/meetings' || pathname.startsWith('/meetings/') || pathname.startsWith('/integrations/')
-    || ['/ai/retrieve', '/commitments', '/management-briefing', '/audit/integrity', '/pipeline/readiness'].includes(pathname)
+    || ['/ai/retrieve', '/chat/messages', '/commitments', '/management-briefing', '/audit/integrity', '/pipeline/readiness'].includes(pathname)
 }
 
 export function isLoopbackRequest(request) {
