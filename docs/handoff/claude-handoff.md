@@ -5,7 +5,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 ## Project and checkpoint
 
 - Repository: `D:\Data Science Project\smart-meeting-platform` on branch `master`.
-- Latest functional code checkpoint: `2779296 Add local bge-m3 embeddings for hybrid chat retrieval` (meeting chat began at `cc12c97`; before that `5ea85a0 Show every recording of a meeting in the studio`) (Claude session of 2026-10-06 began after `474d72d`; feature delivery began at `5390d5a`). The commit that updates this handoff follows it.
+- Latest functional code checkpoint: `509e921 Add organizer summary regeneration with versions` (before that `2779296 Add local bge-m3 embeddings for hybrid chat retrieval`) (meeting chat began at `cc12c97`; before that `5ea85a0 Show every recording of a meeting in the studio`) (Claude session of 2026-10-06 began after `474d72d`; feature delivery began at `5390d5a`). The commit that updates this handoff follows it.
 - The worktree should be clean except for these intentionally untracked local-only paths: `.copilot/`, `.github/skills/secret-handling/`, `.npmrc`, `.prototype-seed/`, `.squad/`, `.vscode/`, `design-qa.md`, and `implementation-1440x1024.png`. Never commit them.
 - Never print or commit `.env`, `.data/`, `.cache/`, `dist/`, `node_modules/`, credentials, certificate material, or audio-key material.
 
@@ -63,6 +63,17 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 36. **Speaker naming** (CAP-05, user decisions 2026-10-07): per-recording, versioned, audited; organizer names or corrects, others self-claim, the named person can dispute; display only (never owners); confirmed names go to the chat provider. "Who spoke" panel in the studio.
 37. **Disk incident (2026-10-07):** drive C: reached 0 GB, which surfaced as a PGlite `ErrnoError 51` (WASI ENOSPC) in the on-disk PostgreSQL test. 45 leftover test folders were removed and the browser smoke now deletes its Chrome profile. The user freed space (14 GB free). Ollama's models (27.8 GB) are still on C:; moving them with `OLLAMA_MODELS` is the user's decision.
 
+38. **Neighbouring context for short fragments** (`1462faf`): a transcript excerpt under 25 words is sent with the lines before and after it in the same recording, each with its own speaker. No measurable gain on the small synthetic set (all fragments are retrieved there anyway); expected to help in long real meetings.
+39. **Summary regeneration** (`509e921`, CAP-10): organizer-only "Rewrite summary", confirmed names sent to the summary provider (user decision), same normalization, versioned IDs, last three versions kept with a "What changed" list.
+40. **Owner rule enforced in code:** an action keeps an owner only when the cited lines name that participant. Found in a live run where the model made a confirmed speaker the owner of "I will send...".
+
+### Decisions Claude made on the night of 2026-10-07, for review
+
+- Regeneration does not require a fresh consent window (consent expires after 4 hours), only that every required participant's latest decision is still "granted", the meeting is active and recordable, and the policy is unchanged. Rationale: it reprocesses audio already captured with consent and records nothing new.
+- Owners must be named in the cited transcript lines (applies to first processing too). A participant ID that is never spoken (for example `j.smith`) can therefore never be an owner.
+- "What changed" treats two items sharing at least half their words as the same item, so rewording is not reported as a dropped decision.
+- No GitHub push: the repository has no remote and the GitHub CLI is not signed in. Verified git bundles of the full history are in `D:\MeetingLedger-backups\` instead.
+
 ### State of this computer's installation (2026-10-06)
 
 - PostgreSQL is migrated to `003_knowledge_embeddings` (the user ran `npm run db:migrate` as `ledger_owner`; the owner URL needs `?sslmode=verify-full&sslrootcert=C:/ProgramData/MeetingLedger/certs/root-ca.pem`, because `pg_hba.conf` accepts only encrypted connections).
@@ -86,7 +97,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 
 ## Validation at this checkpoint
 
-- `npm test`: **278/278 passing** after the guardrail, memory, and speaker-naming layers (259/259 after meeting chat and hybrid retrieval; 236/236 before chat). `npm run test:sites` 4/4; `npm run build` passed.
+- `npm test`: **286/286 passing** after neighbouring context and summary regeneration (278/278 after the guardrail, memory, and speaker-naming layers ; 259/259 after meeting chat and hybrid retrieval; 236/236 before chat). `npm run test:sites` 4/4; `npm run build` passed.
 - `npm test`: 208/208 passing at the multi-recording fix (three new regression tests across in-memory, SQLite, and PostgreSQL/PGlite; each failed before the fix).
 - `npm run smoke:browser` and `npm run smoke:browser -- -ProcessRecording` passed with zero browser errors after the multi-recording fix.
 - `npm run build`: passed.
