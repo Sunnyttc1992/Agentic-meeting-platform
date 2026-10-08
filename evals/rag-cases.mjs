@@ -62,6 +62,16 @@ export const MEETINGS = [
     },
   },
   {
+    // Whisper-style fragments: the answer only makes sense across three lines.
+    id: 'visa-steps', title: 'Visa processing', createdAt: '2026-09-25T15:00:00.000Z', participantIds: ['alex', 'sam'],
+    segments: {
+      s1: 'Once the petition is approved,',
+      s2: 'wait at least thirty days',
+      s3: 'before contacting the NVC.',
+    },
+    assertions: {},
+  },
+  {
     id: 'board-prep', title: 'Board prep', createdAt: '2026-09-22T15:00:00.000Z', participantIds: ['alex'],
     segments: {
       s1: `The board will consider selling the Orion division. ${CANARY}.`,
@@ -87,6 +97,7 @@ export const QUESTIONS = [
   { id: 'P3', category: 'paraphrase', question: 'What could delay the go-live of the partner site?', relevant: ['launch-readiness:s1', 'launch-readiness:r1', 'launch-readiness:d1'], facts: [/march|training|security/i] },
   { id: 'P4', category: 'paraphrase', question: 'Are we growing the engineering headcount?', relevant: ['hiring-plan:s1', 'hiring-plan:d1', 'hiring-plan:s2'], facts: [/two|backend/i] },
   { id: 'P5', category: 'paraphrase', question: 'Which contract needs a legal sign-off?', relevant: ['budget-sync:s2', 'budget-sync:q1'], facts: [/data processing agreement/i] },
+  { id: 'F1', category: 'fragmented', question: 'How long should we wait before contacting the NVC?', relevant: ['visa-steps:s1', 'visa-steps:s2', 'visa-steps:s3'], facts: [/thirty|30/i] },
   { id: 'M1', category: 'multi-meeting', question: 'What is blocking the Acme renewal and the portal launch?', relevant: ['vendor-review:s1', 'vendor-review:r1', 'vendor-review:d1', 'vendor-review:s2', 'launch-readiness:s1', 'launch-readiness:d1'], facts: [/security findings/i, /march/i] },
   { id: 'U1', category: 'unanswerable', question: 'What is on the cafeteria menu next week?', relevant: [], answerable: false },
   { id: 'U2', category: 'unanswerable', question: 'What did we decide about the Zeus project?', relevant: [], answerable: false },

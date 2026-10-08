@@ -134,6 +134,27 @@ test('deleting a meeting deletes every saved turn that drew on it, for every use
   assert.deepEqual(await platform.chat.forUser(tenantId, 'sam'), [])
 })
 
+test('a short transcript excerpt travels with its neighbouring lines, each with its own speaker', async () => {
+  const { platform, answerer } = await setup({ answerer: fakeAnswerer((request) => ({ answer: 'Wait at least thirty days.', answered: true, citations: [request.excerpts.find((item) => item.text === 'before contacting the NVC.').label] })) })
+  const alexOnly = { tenantId, userId: 'alex' }
+  await platform.createMeeting(alexOnly, { id: 'visa', title: 'Visa processing', tenantId, organizerId: 'alex', participantIds: ['alex'], classification: 'standard' })
+  await platform.recordConsent(alexOnly, 'visa', { participantId: 'alex', capturedAt: '2026-10-06T11:59:00Z', expiresAt: '2026-10-06T23:00:00Z', policyVersion: 'v1', decision: 'granted' })
+  const authorization = await platform.authorizeRecording(alexOnly, 'visa')
+  await platform.appendTranscript(alexOnly, 'visa', authorization, [
+    { id: 'v1', diarizationLabel: 'SPEAKER_00', startMs: 0, endMs: 2000, text: 'Once the petition is approved,', provenance: { engine: 'test' } },
+    { id: 'v2', diarizationLabel: 'SPEAKER_01', startMs: 2000, endMs: 4000, text: 'wait at least thirty days', provenance: { engine: 'test' } },
+    { id: 'v3', diarizationLabel: 'SPEAKER_00', startMs: 4000, endMs: 6000, text: 'before contacting the NVC.', provenance: { engine: 'test' } },
+  ])
+  const { turn } = await platform.askChat(alexOnly, { question: 'contacting the NVC?' })
+  const sent = answerer.requests.at(-1).excerpts.find((item) => item.text === 'before contacting the NVC.')
+  assert.deepEqual(sent.context, { before: { speaker: 'SPEAKER_01', text: 'wait at least thirty days' }, after: null })
+  assert.match(prepareChatPrompt(answerer.requests.at(-1)), /\(just before, SPEAKER_01: wait at least thirty days\)/)
+  const shown = turn.sources.find((source) => source.text === 'before contacting the NVC.')
+  assert.deepEqual(shown.context, { before: 'wait at least thirty days', after: null })
+  const reloaded = (await platform.getChatHistory(alexOnly)).turns.at(-1).sources.find((source) => source.text === 'before contacting the NVC.')
+  assert.deepEqual(reloaded.context, { before: 'wait at least thirty days', after: null }, 'the context survives a reload')
+})
+
 test('provider adapters send the minimal request unstored and fail closed', async () => {
   const excerpts = [{ label: 'E1', meetingLetter: 'A', meetingDate: '2026-10-05', kind: 'decision', at: null, speaker: null, text: 'Sign the renewal.' }]
   const openaiRequests = []

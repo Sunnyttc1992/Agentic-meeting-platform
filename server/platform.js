@@ -179,6 +179,29 @@ function withSpeakerNames({ segments = [], assertions = [] }, maps, participantI
   }
 }
 
+// Whisper often splits speech into short fragments ("before contacting the
+// NVC."), which say little on their own. A short transcript excerpt therefore
+// travels with the lines just before and after it in the same recording, each
+// labelled with its own speaker so neighbouring words are never credited to
+// the matched line's speaker.
+const SHORT_EXCERPT_WORDS = 25
+const MAX_CONTEXT_TEXT = 240
+
+function transcriptNeighbours(segments) {
+  const byRecording = new Map()
+  for (const segment of segments) {
+    const key = segment?.provenance?.recordingId ?? ''
+    if (!byRecording.has(key)) byRecording.set(key, [])
+    byRecording.get(key).push(segment)
+  }
+  const neighbours = new Map()
+  for (const list of byRecording.values()) {
+    list.sort((a, b) => (a.startMs ?? 0) - (b.startMs ?? 0))
+    list.forEach((segment, index) => neighbours.set(segment.id, { before: list[index - 1] ?? null, after: list[index + 1] ?? null }))
+  }
+  return neighbours
+}
+
 // A meeting may hold several recordings: a stopped capture needs a fresh
 // preflight. A recording owns the segments whose canonical provenance names it
 // and the assertions citing them; a claim citing a removed segment would be
@@ -1911,10 +1934,10 @@ export class MeetingIntelligencePlatform {
       else {
         grounding = await checkGrounding({
           answer: text,
-          citedTexts: cited.map((item) => sentByLabel.get(item.label)?.text ?? ''),
-          citedVectors: cited.every((item) => Array.isArray(item.vector)) ? cited.map((item) => item.vector) : null,
+          citedTexts: cited.map((item) => { const sent = sentByLabel.get(item.label); return [sent?.context?.before?.text, sent?.text, sent?.context?.after?.text].filter(Boolean).join(' ') }),
+          citedVectors: cited.every((item) => Array.isArray(item.vector) && !item.context) ? cited.map((item) => item.vector) : null,
           sentTexts: [
-            ...outbound.request.excerpts.flatMap((item) => [item.text, item.meetingDate, item.at ?? '']),
+            ...outbound.request.excerpts.flatMap((item) => [item.text, item.meetingDate, item.at ?? '', item.context?.before?.text ?? '', item.context?.after?.text ?? '']),
             ...[...outbound.request.history, ...outbound.request.recalled].flatMap((turn) => [turn.question, turn.answer]),
             question,
           ],
@@ -1968,8 +1991,11 @@ export class MeetingIntelligencePlatform {
       const sources = new Map()
       for (const meetingId of new Set(recent.flatMap((turn) => turn.sources.map((source) => source.meetingId)))) {
         const knowledge = withSpeakerNames(await this.knowledge.forMeeting(actor.tenantId, meetingId), await this.#speakerMaps(actor.tenantId, meetingId), meetings.get(meetingId)?.participantIds ?? [])
+        const neighbours = transcriptNeighbours(knowledge.segments ?? [])
         for (const item of [...(knowledge.segments ?? []), ...(knowledge.assertions ?? [])]) {
-          sources.set(`${meetingId}:${item.id}`, this.#chatSource(meetings.get(meetingId), item))
+          const source = this.#chatSource(meetings.get(meetingId), item)
+          const around = source.kind === 'transcript' && source.text.split(/\s+/).length < SHORT_EXCERPT_WORDS ? neighbours.get(item.id) : null
+          sources.set(`${meetingId}:${item.id}`, around ? { ...source, context: { before: around.before ? { text: around.before.text } : null, after: around.after ? { text: around.after.text } : null } } : source)
         }
       }
       return Object.freeze({
@@ -2042,6 +2068,7 @@ export class MeetingIntelligencePlatform {
       await this.#audit({ correlationId, principal: actor, action: 'ai.retrieve', meetingId, outcome: 'allowed', reason: null })
       read += 1
       const knowledge = withSpeakerNames(await this.knowledge.forMeeting(actor.tenantId, meetingId), await this.#speakerMaps(actor.tenantId, meetingId), meetingRecord.participantIds)
+      const neighbours = transcriptNeighbours(knowledge.segments ?? [])
       const items = [...(knowledge.segments ?? []), ...(knowledge.assertions ?? []).filter((item) => isBoundedKnowledgeCitationList(item?.citations))]
         .filter((item) => typeof item?.id === 'string' && typeof item?.text === 'string' && item.text.trim())
       let vectors = null
@@ -2050,7 +2077,7 @@ export class MeetingIntelligencePlatform {
       }
       for (const item of items) {
         entries.push({
-          meetingRecord, item,
+          meetingRecord, item, neighbours: neighbours.get(item.id) ?? null,
           keyword: keywordScore(item.text, keywords) + (Object.hasOwn(item, 'kind') ? 0.5 : 0),
           keywordHit: keywordScore(item.text, keywords) > 0,
           similarity: vectors?.get(item.id) ? cosineSimilarity(questionVector, vectors.get(item.id)) : null,
@@ -2067,19 +2094,25 @@ export class MeetingIntelligencePlatform {
     }
     const ranked = [...fused.entries()].sort((a, b) => b[1] - a[1]).map(([entry]) => entry)
     const letters = new Map()
-    const excerpts = ranked.slice(0, MAX_CHAT_EXCERPTS).map(({ meetingRecord, item, vector }, index) => {
+    const speakerOf = (segment) => (segment.speaker ? `${segment.speaker.participantId} (confirmed)` : /^SPEAKER_\d{2}$/.test(segment.diarizationLabel ?? '') ? segment.diarizationLabel : 'unattributed')
+    const contextLine = (segment) => (segment ? { speaker: speakerOf(segment), text: String(segment.text ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_CONTEXT_TEXT) } : null)
+    const excerpts = ranked.slice(0, MAX_CHAT_EXCERPTS).map(({ meetingRecord, item, vector, neighbours }, index) => {
       if (!letters.has(meetingRecord.id)) letters.set(meetingRecord.id, String.fromCharCode(65 + (letters.size % 26)))
       const source = this.#chatSource(meetingRecord, item)
       const label = `E${index + 1}`
+      const context = source.kind === 'transcript' && neighbours && source.text.split(/\s+/).length < SHORT_EXCERPT_WORDS
+        ? { before: contextLine(neighbours.before), after: contextLine(neighbours.after) }
+        : null
       return {
-        ...source, label, vector,
+        ...source, label, vector, context,
         prompt: {
           label, meetingLetter: letters.get(meetingRecord.id), meetingDate: source.meetingDate ?? 'date unknown', kind: source.kind,
           at: Number.isFinite(source.startMs) ? formatChatTime(source.startMs) : null,
           // A confirmed speaker is sent by participant ID (user decision
           // 2026-10-07); an unconfirmed label stays anonymous.
-          speaker: source.kind === 'transcript' ? (item.speaker ? `${item.speaker.participantId} (confirmed)` : /^SPEAKER_\d{2}$/.test(item.diarizationLabel ?? '') ? item.diarizationLabel : 'unattributed') : null,
+          speaker: source.kind === 'transcript' ? speakerOf(item) : null,
           text: source.text,
+          ...(context ? { context } : {}),
         },
       }
     })
@@ -2136,7 +2169,7 @@ export class MeetingIntelligencePlatform {
       // A source whose content was replaced or removed is simply not shown.
       sources: Object.freeze(turn.sources.map((source) => {
         const resolved = sources.get(`${source.meetingId}:${source.sourceId}`)
-        return resolved ? Object.freeze({ label: source.label, meetingId: resolved.meetingId, sourceId: resolved.sourceId, meetingTitle: resolved.meetingTitle, meetingCreatedAt: resolved.meetingCreatedAt, speaker: resolved.speaker ?? null, kind: resolved.kind, startMs: resolved.startMs, text: resolved.text }) : null
+        return resolved ? Object.freeze({ label: source.label, context: resolved.context ? Object.freeze({ before: resolved.context.before?.text ?? null, after: resolved.context.after?.text ?? null }) : null, meetingId: resolved.meetingId, sourceId: resolved.sourceId, meetingTitle: resolved.meetingTitle, meetingCreatedAt: resolved.meetingCreatedAt, speaker: resolved.speaker ?? null, kind: resolved.kind, startMs: resolved.startMs, text: resolved.text }) : null
       }).filter(Boolean)),
     })
   }

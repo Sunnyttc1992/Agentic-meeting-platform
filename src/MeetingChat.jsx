@@ -44,7 +44,7 @@ export function ChatTurn({ turn, embeddingModel = null, onForget = null }) {
     {warning && <p className="chat-note chat-warning">{warning}</p>}
     {note && <p className="chat-note">{note}</p>}
     {turn.sources.length > 0 && <ol className="chat-sources" aria-label="Sources">{turn.sources.map((source, index) => <li key={source.label}>
-      <details><summary><span className="chat-source-label">{index + 1}</span><b>{source.meetingTitle}</b><small>{[KIND_LABELS[source.kind] ?? 'Note', Number.isFinite(source.startMs) ? clock(source.startMs) : null, shortDate(source.meetingCreatedAt)].filter(Boolean).join(' · ')}</small></summary><p>{source.text}</p></details>
+      <details><summary><span className="chat-source-label">{index + 1}</span><b>{source.meetingTitle}</b><small>{[KIND_LABELS[source.kind] ?? 'Note', Number.isFinite(source.startMs) ? clock(source.startMs) : null, shortDate(source.meetingCreatedAt)].filter(Boolean).join(' · ')}</small></summary>{source.context?.before && <p className="chat-context">{source.context.before}</p>}<p>{source.text}</p>{source.context?.after && <p className="chat-context">{source.context.after}</p>}</details>
     </li>)}</ol>}
     {turn.provider && turn.status === 'answered' && <small className="chat-provenance">Written by {turn.provider}{turn.model ? ` (${turn.model})` : ''} from the sources above.</small>}
     {turn.memory?.recalled > 0 && <small className="chat-provenance">Also drew on {plural(turn.memory.recalled, 'related earlier question', 'related earlier questions')} from your history.</small>}

@@ -97,7 +97,11 @@ export function prepareOutbound({ question, history, recalled = [], excerpts }) 
       question,
       history: history.map(turn),
       recalled: recalled.map(turn),
-      excerpts: excerpts.map((item) => ({ ...item, text: clean(item.text) })),
+      excerpts: excerpts.map((item) => ({
+        ...item,
+        text: clean(item.text),
+        ...(item.context ? { context: { before: item.context.before ? { ...item.context.before, text: clean(item.context.before.text) } : null, after: item.context.after ? { ...item.context.after, text: clean(item.context.after.text) } : null } } : {}),
+      })),
     },
     redacted,
   }
