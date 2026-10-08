@@ -157,14 +157,14 @@ const HOSTILE_RESPONSE = {
   ],
 }
 
-async function pipelineSetup(intelligence) {
+async function pipelineSetup(intelligence, { transcript = TRANSCRIPT } = {}) {
   const meetings = new InMemoryMeetingRepository()
   const knowledge = new InMemoryKnowledgeRepository()
   const recordings = new InMemoryRecordingRepository()
   const audit = new InMemoryAppendOnlyAudit()
   const jobs = []
   const processor = new LocalMeetingProcessor({
-    transcriber: { transcribe: async (bytes) => { parseSpeechWav(bytes); return TRANSCRIPT } },
+    transcriber: { transcribe: async (bytes) => { parseSpeechWav(bytes); return transcript } },
     intelligence,
     now: () => new Date('2026-10-03T12:00:00Z'),
   })
@@ -186,6 +186,21 @@ async function runRecording({ platform, jobs }, bytes = Buffer.from(encodeWavPcm
   await jobs.shift()()
   return (await platform.getRecording(alex, 'meeting-1', created.recordingId))
 }
+
+test('a long meeting whose summary cites more lines than the limit still completes, keeping the first 16 citations', async () => {
+  // Reproduces a real 10-minute meeting (2026-10-08): the summary cited 25
+  // lines and the platform rejected the whole result.
+  const transcript = Array.from({ length: 25 }, (_, index) => ({ startMs: index * 1000, endMs: index * 1000 + 900, text: `Point ${index + 1} about the vendor renewal.` }))
+  const all = transcript.map((_, index) => `S${index + 1}`)
+  const reply = { summary: { text: 'A long review of the vendor renewal.', citations: all }, decisions: [{ text: 'Renew the vendor contract.', citations: [...all, 'S1', 'S2'] }], risks: [], open_questions: [], action_plan: [] }
+  const state = await pipelineSetup(new ClaudeMeetingIntelligence({ client: fakeClaude(reply).client }), { transcript })
+  const status = await runRecording(state)
+  assert.equal(status.recording.state, 'completed')
+  const byKind = (kind) => status.assertions.filter((assertion) => assertion.kind === kind)
+  assert.equal(byKind('summary')[0].citations.length, 16)
+  assert.equal(byKind('decision')[0].citations.length, 16, 'duplicates are removed before the limit applies')
+  assert.equal(status.recording.withheldAssertions, 0)
+})
 
 test('Claude receives only the transcript, participant IDs, and date, and hostile output is defused before storage', async () => {
   const claude = fakeClaude(HOSTILE_RESPONSE)
