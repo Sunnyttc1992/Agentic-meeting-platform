@@ -57,6 +57,12 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 31. **Hybrid retrieval with local embeddings:** `bge-m3` through Ollama on this computer (loopback-only client), vectors in `knowledge_embeddings` (migration `003_knowledge_embeddings`, tenant RLS), built lazily for readable meetings and cleared whenever knowledge is replaced, quarantined, or deleted. Keyword and vector rankings are fused by reciprocal rank fusion (similarity floor 0.45, top 6). Falls back to keywords without Ollama or migration 003.
 32. **RAG evaluation:** `npm run eval:rag` (retrieval, local, floor in `npm test`), `-- --keyword` for the baseline, `-- --answers` for answer scoring through the chat provider. Hybrid vs keyword on the synthetic set: paraphrase recall 0.90 vs 0.47, overall recall 0.95 vs 0.76, MRR 0.93 vs 0.77, fact coverage 1.00 vs 0.82, abstention 1.00 vs 0.87, leaks 0.
 
+33. **Ask page** (`#/ask`, user feedback): chat has its own page laid out like the studio; the workspace links to it.
+34. **Chat guardrail layer** (`server/guardrails.js`): question validation, per-user daily limit, personal-data redaction of everything sent, valid-citation filter, grounding check (unmatched numbers and statements are highlighted; an answer with no grounded statement is withheld), audited as `chat.guardrail` by code.
+35. **Chat memory layer** (`server/chat-memory.js`): 4 recent turns plus up to 2 related older turns recalled by local bge-m3 similarity (0.48, calibrated), 90-day retention enforced by the sweep, per-turn Forget.
+36. **Speaker naming** (CAP-05, user decisions 2026-10-07): per-recording, versioned, audited; organizer names or corrects, others self-claim, the named person can dispute; display only (never owners); confirmed names go to the chat provider. "Who spoke" panel in the studio.
+37. **Disk incident (2026-10-07):** drive C: reached 0 GB, which surfaced as a PGlite `ErrnoError 51` (WASI ENOSPC) in the on-disk PostgreSQL test. 45 leftover test folders were removed and the browser smoke now deletes its Chrome profile. The user freed space (14 GB free). Ollama's models (27.8 GB) are still on C:; moving them with `OLLAMA_MODELS` is the user's decision.
+
 ### State of this computer's installation (2026-10-06)
 
 - PostgreSQL is migrated to `003_knowledge_embeddings` (the user ran `npm run db:migrate` as `ledger_owner`; the owner URL needs `?sslmode=verify-full&sslrootcert=C:/ProgramData/MeetingLedger/certs/root-ca.pem`, because `pg_hba.conf` accepts only encrypted connections).
@@ -80,7 +86,7 @@ Read this file, then `AGENTS.md`, before changing the project. This is the curre
 
 ## Validation at this checkpoint
 
-- `npm test`: **259/259 passing** after meeting chat and hybrid retrieval (236/236 before chat). `npm run test:sites` 4/4; `npm run build` passed.
+- `npm test`: **278/278 passing** after the guardrail, memory, and speaker-naming layers (259/259 after meeting chat and hybrid retrieval; 236/236 before chat). `npm run test:sites` 4/4; `npm run build` passed.
 - `npm test`: 208/208 passing at the multi-recording fix (three new regression tests across in-memory, SQLite, and PostgreSQL/PGlite; each failed before the fix).
 - `npm run smoke:browser` and `npm run smoke:browser -- -ProcessRecording` passed with zero browser errors after the multi-recording fix.
 - `npm run build`: passed.

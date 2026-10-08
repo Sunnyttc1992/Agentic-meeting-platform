@@ -120,9 +120,9 @@ Reject the milestone if any of the following is true:
 11. A service identity can bypass user policy, impersonate a user, or perform cross-tenant bulk reads.
 12. Production-readiness is claimed solely from in-memory tests without P and O evidence.
 
-## Implementation status (assessed 2026-10-06)
+## Implementation status (assessed 2026-10-07)
 
-Assessed by the coding agent from the automated test suite (191 tests), not by the Reviewer. Done means the M-level criteria have passing tests; partial means some criteria are untested or unimplemented. P and O columns list only evidence that exists today. Overall: M about 76% (30.5 of 40 with partial = 0.5), P about 13%, O 0%.
+Assessed by the coding agent from the automated test suite (278 tests), not by the Reviewer. Done means the M-level criteria have passing tests; partial means some criteria are untested or unimplemented. The evidence column lists what exists today; nearly all of it is automated tests and synthetic local runs on one computer, so it is not pilot evidence. Overall: M 82.5% (33 of 40 with partial = 0.5: 28 done, 10 partial, 2 not started); pilot evidence with real users and real meetings is still minimal, and O is 0%.
 
 | ID | M | P / O evidence today | Main gap |
 |---|---|---|---|
