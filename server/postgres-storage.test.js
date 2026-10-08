@@ -78,6 +78,16 @@ async function seedAndUpload(platform) {
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30))
+// Waits for background processing to finish instead of a fixed sleep, so a
+// busy machine slows the test down rather than failing it.
+async function waitForProcessing(platform, recordingId, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const { recording } = await platform.getRecording(alex, 'meeting-1', recordingId)
+    if (!['uploaded', 'queued', 'processing'].includes(recording.state) || Date.now() > deadline) return recording.state
+    await settle()
+  }
+}
 
 test('the PostgreSQL adapter satisfies the sealed storage contract', async () => {
   const database = await openDatabase()
@@ -389,7 +399,7 @@ test('the node-postgres driver path works end to end over the PostgreSQL wire pr
     const platform = platformOn(storage)
     const recordingId = await seedAndUpload(platform)
     await platform.startProcessing(alex, 'meeting-1', recordingId)
-    await settle()
+    await waitForProcessing(platform, recordingId)
     const status = await platform.getRecording(sam, 'meeting-1', recordingId)
     assert.equal(status.recording.state, 'completed')
     assert.equal(status.assertions.find((item) => item.kind === 'action').commitment.ownerId, 'sam')

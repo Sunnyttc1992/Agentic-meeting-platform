@@ -87,12 +87,21 @@ function createMeetingIntelligence(env) {
   return null
 }
 
+// Summaries are written after the organizer has reviewed the transcript
+// (MEETING_SUMMARY_MODE=review, the default; user decision 2026-10-08):
+// processing then runs only local Whisper and pyannote, and nothing is sent to
+// a provider until "Summarize". MEETING_SUMMARY_MODE=automatic summarizes as
+// part of processing, as before.
+export function summaryMode(env = process.env) {
+  return String(env.MEETING_SUMMARY_MODE ?? '').trim().toLowerCase() === 'automatic' ? 'automatic' : 'review'
+}
+
 export function createSpeechProcessor({ mode = process.env.MEETING_PROCESSOR ?? 'local', env = process.env } = {}) {
   if (mode === 'fake') return new FakeSpeechProcessor()
   return new LocalMeetingProcessor({
     transcriber: new LocalWhisperTranscriber(),
     diarizer: new LocalPyannoteDiarizer({ env }),
-    intelligence: createMeetingIntelligence(env),
+    intelligence: summaryMode(env) === 'automatic' ? createMeetingIntelligence(env) : null,
   })
 }
 

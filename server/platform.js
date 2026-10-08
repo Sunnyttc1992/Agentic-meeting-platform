@@ -40,6 +40,15 @@ const TRUSTED_PROCESSOR_MODES = new Map([
   ['Local Whisper + pyannote + OpenAI', 'local-whisper-pyannote-openai'],
 ])
 const MODEL_BACKED_PROCESSOR_MODES = new Set(['local-whisper-claude', 'local-whisper-pyannote-claude', 'local-whisper-openai', 'local-whisper-pyannote-openai'])
+// When a transcript-only recording is summarized later, its label names the
+// provider that wrote the summary.
+const SUMMARIZED_PROCESSOR_LABELS = new Map([
+  ['Local Whisper transcription only', { OpenAI: 'Local Whisper + OpenAI', Claude: 'Local Whisper + Claude' }],
+  ['Local Whisper + pyannote transcription', { OpenAI: 'Local Whisper + pyannote + OpenAI', Claude: 'Local Whisper + pyannote + Claude' }],
+])
+// Version 0 means transcribed but not yet summarized (transcript review
+// first, user decision 2026-10-08); a recording summarized on processing is 1.
+const summaryVersionOf = (recording, assertionCount) => (Number.isSafeInteger(recording?.summaryVersion) ? recording.summaryVersion : (assertionCount > 0 ? 1 : 0))
 // Whisper cannot separate speakers; this label is kept verbatim so the
 // transcript never implies one diarized speaker.
 const UNATTRIBUTED_SPEAKER_LABEL = 'UNATTRIBUTED'
@@ -1501,7 +1510,7 @@ export class MeetingIntelligencePlatform {
         Object.assign(output, withSpeakerNames(own, new Map([[recording.id, speakerMapOf(recording)]]), meetingRecord.participantIds))
         output.speakers = this.#speakersView(actor, meetingRecord, recording, own.segments)
         output.summaryVersions = Object.freeze({
-          current: recording.summaryVersion ?? 1,
+          current: summaryVersionOf(recording, own.assertions.length),
           generatedAt: recording.summaryGeneratedAt ?? recording.uploadedAt ?? null,
           canRegenerate: Boolean(this.summarizer) && meetingRecord.organizerId === actor.userId,
           provider: this.summarizer?.providerName ?? null,
@@ -1532,8 +1541,9 @@ export class MeetingIntelligencePlatform {
         const knowledge = transaction?.knowledge ?? this.knowledge
         const commitments = transaction?.commitments ?? this.commitments
         const recording = transaction ? await recordings.get(recordingId) : await recordings.get(actor.tenantId, recordingId)
-        invariant(recording?.state === 'completed' && (recording.summaryVersion ?? 1) === prepared.fromVersion, 'SUMMARY_CHANGED', 'The recording changed while its summary was being rewritten; try again', 409)
-        recording.summaryHistory = [...(recording.summaryHistory ?? []), prepared.previous].slice(-3)
+        invariant(recording?.state === 'completed' && summaryVersionOf(recording, prepared.ownAssertionCount) === prepared.fromVersion, 'SUMMARY_CHANGED', 'The recording changed while its summary was being written; try again', 409)
+        if (prepared.previous) recording.summaryHistory = [...(recording.summaryHistory ?? []), prepared.previous].slice(-3)
+        recording.processor = prepared.processor
         recording.summaryVersion = prepared.version
         recording.summaryGeneratedAt = this.clock.now().toISOString()
         recording.withheldAssertions = prepared.result.withheldAssertions
@@ -1571,20 +1581,21 @@ export class MeetingIntelligencePlatform {
     } catch {
       throw new DomainError('SUMMARY_FAILED', 'The summary could not be rewritten; the current version is unchanged', 502)
     }
-    const fromVersion = recording.summaryVersion ?? 1
+    const fromVersion = summaryVersionOf(recording, own.assertions.length)
     const version = fromVersion + 1
+    const processor = SUMMARIZED_PROCESSOR_LABELS.get(recording.processor)?.[this.summarizer.providerName] ?? recording.processor
     const result = this.#normalizeProcessorResult(
-      { segments: raw.map(({ confirmedParticipantId, ...segment }) => segment), assertions: assertionsFromIntelligence(intelligence), processor: recording.processor, model: this.summarizer.model ?? null },
+      { segments: raw.map(({ confirmedParticipantId, ...segment }) => segment), assertions: assertionsFromIntelligence(intelligence), processor, model: this.summarizer.model ?? null },
       recording, this.#authorizedRosterEvidence(meetingRecord), meetingRecord.participantIds,
-      { assertionPrefix: `${recording.id}-v${version}-assertion-` },
+      { assertionPrefix: version === 1 ? `${recording.id}-assertion-` : `${recording.id}-v${version}-assertion-` },
     )
-    const previous = {
+    const previous = fromVersion === 0 ? null : {
       version: fromVersion,
       generatedAt: recording.summaryGeneratedAt ?? recording.uploadedAt ?? null,
       model: own.assertions.find((item) => typeof item.provenance?.model === 'string')?.provenance.model ?? null,
       items: own.assertions.map((item) => ({ kind: item.kind, text: item.text })),
     }
-    return { fromVersion, version, result, previous, segments: own.segments }
+    return { fromVersion, version, result, previous, processor, ownAssertionCount: own.assertions.length, segments: own.segments }
   }
 
   // Regeneration processes audio already captured with consent and records

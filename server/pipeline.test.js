@@ -157,7 +157,7 @@ const HOSTILE_RESPONSE = {
   ],
 }
 
-async function pipelineSetup(intelligence, { transcript = TRANSCRIPT } = {}) {
+async function pipelineSetup(intelligence, { transcript = TRANSCRIPT, summarizer = null } = {}) {
   const meetings = new InMemoryMeetingRepository()
   const knowledge = new InMemoryKnowledgeRepository()
   const recordings = new InMemoryRecordingRepository()
@@ -169,7 +169,7 @@ async function pipelineSetup(intelligence, { transcript = TRANSCRIPT } = {}) {
     now: () => new Date('2026-10-03T12:00:00Z'),
   })
   const platform = new MeetingIntelligencePlatform({
-    meetings, knowledge, recordings, audit, speechProcessor: processor, policy: new PolicyEngine(),
+    meetings, knowledge, recordings, audit, speechProcessor: processor, policy: new PolicyEngine(), summarizer,
     clock: new FixedClock('2026-10-03T12:00:00Z'), acceptedMimeTypes: [SPEECH_WAV_MIME_TYPE], schedule: (job) => jobs.push(job),
   })
   await platform.createMeeting(alex, { id: 'meeting-1', tenantId: 'northstar', organizerId: 'alex', participantIds: ['alex', 'sam'], classification: 'standard', consentPolicyVersion: 'v1' })
@@ -186,6 +186,26 @@ async function runRecording({ platform, jobs }, bytes = Buffer.from(encodeWavPcm
   await jobs.shift()()
   return (await platform.getRecording(alex, 'meeting-1', created.recordingId))
 }
+
+test('transcript review first: processing sends nothing, and Summarize then writes version 1 from the reviewed transcript', async () => {
+  const openai = fakeOpenAI(HOSTILE_RESPONSE)
+  const state = await pipelineSetup(null, { summarizer: new OpenAIMeetingIntelligence({ client: openai.client, model: 'gpt-test' }) })
+  const status = await runRecording(state)
+  assert.equal(status.recording.state, 'completed')
+  assert.equal(status.recording.processor, 'Local Whisper transcription only')
+  assert.deepEqual(status.assertions, [], 'no summary yet')
+  assert.equal(openai.requests.length, 0, 'nothing was sent while processing')
+  assert.deepEqual([status.summaryVersions.current, status.summaryVersions.canRegenerate, status.summaryVersions.history], [0, true, []])
+
+  assert.deepEqual(await state.platform.regenerateSummary(alex, 'meeting-1', status.recording.id).then((result) => result.version), 1)
+  assert.equal(openai.requests.length, 1)
+  const after = await state.platform.getRecording(sam, 'meeting-1', status.recording.id)
+  assert.equal(after.recording.processor, 'Local Whisper + OpenAI')
+  assert.ok(after.assertions.length > 0 && after.assertions.every((item) => item.id.startsWith(`${status.recording.id}-assertion-`)))
+  assert.ok(after.assertions.every((item) => item.provenance.mode === 'local-whisper-openai' && item.provenance.model === 'gpt-test'))
+  assert.deepEqual([after.summaryVersions.current, after.summaryVersions.history], [1, []], 'the first summary has no earlier version')
+  assert.deepEqual(after.segments.map((segment) => segment.text), status.segments.map((segment) => segment.text), 'the transcript is unchanged')
+})
 
 test('a long meeting whose summary cites more lines than the limit still completes, keeping the first 16 citations', async () => {
   // Reproduces a real 10-minute meeting (2026-10-08): the summary cited 25
