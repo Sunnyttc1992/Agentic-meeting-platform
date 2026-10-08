@@ -59,7 +59,7 @@ Accuracy rules:
 - List each decision, risk, question, and action once. If the same point comes up several times, write one item and cite every segment where it was discussed.
 
 Speakers:
-- Each transcript line carries an anonymous speaker label (such as SPEAKER_00) produced automatically from voice similarity, or "unattributed". Labels are not people: one person may be split across two labels, or two people merged into one. Never treat a label as a name, and never map a label to a participant ID.
+- Each transcript line carries an anonymous speaker label (such as SPEAKER_00) produced automatically from voice similarity, or "unattributed". Labels are not people: one person may be split across two labels, or two people merged into one. Never treat a label as a name, and never map a label to a participant ID yourself. A line marked "SPEAKER_01, confirmed as sam" was confirmed by a person who reviewed the meeting: you may say that participant said it, but speaking does not make them an owner, and speaker_label stays the anonymous label (SPEAKER_01).
 
 Action plan:
 - Write each action as a concrete, verb-first task in one or two sentences.
@@ -108,7 +108,11 @@ export const EMPTY_MEETING_INTELLIGENCE = Object.freeze({ summary: null, decisio
 
 export function prepareMeetingPrompt({ segments, participantIds, meetingDate }) {
   const speakerLabels = new Set(segments.map((segment) => segment.diarizationLabel).filter((label) => SPEAKER_LABEL.test(label ?? '')))
-  const speaker = (segment) => (speakerLabels.has(segment.diarizationLabel) ? segment.diarizationLabel : 'unattributed')
+  // A speaker a person confirmed is shown with the participant ID (only when a
+  // summary is regenerated after naming; user decision 2026-10-07).
+  const speaker = (segment) => (speakerLabels.has(segment.diarizationLabel)
+    ? (typeof segment.confirmedParticipantId === 'string' && participantIds.includes(segment.confirmedParticipantId) ? `${segment.diarizationLabel}, confirmed as ${segment.confirmedParticipantId}` : segment.diarizationLabel)
+    : 'unattributed')
   const transcript = segments.map((segment) => `[${segment.id} ${formatTimestamp(segment.startMs)}-${formatTimestamp(segment.endMs)} ${speaker(segment)}] ${segment.text}`).join('\n')
   return {
     speakerLabels,

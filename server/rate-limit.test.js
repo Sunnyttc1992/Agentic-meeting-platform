@@ -9,6 +9,7 @@ import { createRateLimiter, RATE_LIMITS_PER_MINUTE, rateLimitClass } from './rat
 test('expensive and data-moving routes get their own, tighter limit classes', () => {
   assert.equal(rateLimitClass('POST', '/meetings/m/recordings/r/process'), 'processing')
   assert.equal(rateLimitClass('POST', '/chat/messages'), 'ai')
+  assert.equal(rateLimitClass('POST', '/meetings/m/recordings/r/regenerate'), 'processing')
   assert.equal(rateLimitClass('GET', '/chat/messages'), 'standard')
   assert.equal(rateLimitClass('POST', '/meetings/m/recordings/r/retry'), 'processing')
   assert.equal(rateLimitClass('POST', '/meetings/m/recording/preflight'), 'capture')

@@ -30,6 +30,10 @@ Request settings:
 The platform treats the response as untrusted: it re-checks every citation, owner, deadline, status, and speaker label, and withholds unsupported items. A refusal, truncated reply, or unfinished response fails closed.
 
 
+## Summary regeneration (added 2026-10-07)
+
+When an organizer rewrites a processed recording's summary, the same summary request is sent again from the stored transcript, with one difference: a speaker that a meeting participant confirmed is shown as `SPEAKER_01, confirmed as <participant ID>` (user decision 2026-10-07). Unconfirmed speakers stay anonymous. The result is validated exactly like the first summary; the organizer triggers each rewrite explicitly.
+
 ## Meeting chat (second data flow, added 2026-10-06)
 
 Meeting chat (`server/chat.js`, `askChat` in `server/platform.js`) is a separate, wider flow than a summary and is off unless `MEETING_CHAT_PROVIDER` names `openai`. One question sends one request with:

@@ -18,6 +18,19 @@ export const LOCAL_SPEECH_PROCESSOR_LABELS = Object.freeze({
   openAIDiarizedFull: 'Local Whisper + pyannote + OpenAI',
 })
 
+// Raw processor assertions from a summarizer's normalized output. The platform
+// re-validates them (citations, owners, dates, labels) before storing.
+export function assertionsFromIntelligence(result) {
+  const assertions = []
+  const add = (kind, item, extra = {}) => assertions.push({ id: `A${assertions.length + 1}`, kind, text: item.text, citations: item.citations, ...extra })
+  if (result.summary) add('summary', result.summary)
+  for (const item of result.decisions) add('decision', item)
+  for (const item of result.risks) add('risk', item)
+  for (const item of result.questions) add('question', item)
+  for (const item of result.actions) add('action', item, { commitment: { ownerId: item.ownerId, deadline: item.deadline, agreement: item.agreement, speakerLabel: item.speakerLabel } })
+  return assertions
+}
+
 // Real pipeline: Whisper transcribes on this machine, then (when credentials
 // are configured) Claude or OpenAI writes the cited summary and action plan
 // from that transcript. The platform normalizes and re-validates the whole result.
@@ -51,14 +64,7 @@ export class LocalMeetingProcessor {
     }))
     if (!this.intelligence || segments.length === 0) return { segments, assertions: [], processor: this.name }
     const result = await this.intelligence.extract({ segments, participantIds, meetingDate: this.now().toISOString().slice(0, 10) })
-    const assertions = []
-    const add = (kind, item, extra = {}) => assertions.push({ id: `A${assertions.length + 1}`, kind, text: item.text, citations: item.citations, ...extra })
-    if (result.summary) add('summary', result.summary)
-    for (const item of result.decisions) add('decision', item)
-    for (const item of result.risks) add('risk', item)
-    for (const item of result.questions) add('question', item)
-    for (const item of result.actions) add('action', item, { commitment: { ownerId: item.ownerId, deadline: item.deadline, agreement: item.agreement, speakerLabel: item.speakerLabel } })
-    return { segments, assertions, processor: this.name, model: this.intelligence.model ?? null }
+    return { segments, assertions: assertionsFromIntelligence(result), processor: this.name, model: this.intelligence.model ?? null }
   }
 }
 

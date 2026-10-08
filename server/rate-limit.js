@@ -14,7 +14,7 @@ const WINDOW_MS = 60_000
 const MAX_TRACKED_KEYS = 10_000
 
 export function rateLimitClass(method, pathname) {
-  if (method === 'POST' && /^\/meetings\/[^/]+\/recordings\/[^/]+\/(process|retry)$/.test(pathname)) return 'processing'
+  if (method === 'POST' && /^\/meetings\/[^/]+\/recordings\/[^/]+\/(process|retry|regenerate)$/.test(pathname)) return 'processing'
   if (method === 'POST' && /^\/meetings\/[^/]+\/recording\/preflight$/.test(pathname)) return 'capture'
   if (method !== 'GET' && /^\/meetings\/[^/]+\/recordings(\/[^/]+\/bytes)?$/.test(pathname)) return 'capture'
   if (method === 'GET' && /^\/meetings\/[^/]+\/export$/.test(pathname)) return 'export'

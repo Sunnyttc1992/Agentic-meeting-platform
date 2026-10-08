@@ -182,6 +182,8 @@ export function createHttpHandler(platform, { pipelineReadiness = createPipeline
         return json(response, 200, await platform.askChat(principalFrom(request), body, correlationId))
       }
       if (url.pathname === '/chat/messages' && request.method === 'DELETE') return json(response, 200, await platform.clearChatHistory(principalFrom(request), correlationId))
+      const regenerateMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings\/([^/]+)\/regenerate$/)
+      if (regenerateMatch && request.method === 'POST') { validatePreflight(await readJson(request)); return json(response, 200, await platform.regenerateSummary(principalFrom(request), regenerateMatch[1], regenerateMatch[2], correlationId)) }
       const speakerMatch = url.pathname.match(/^\/meetings\/([^/]+)\/recordings\/([^/]+)\/speakers\/([^/]+)$/)
       if (speakerMatch && request.method === 'PUT') {
         const body = await readJson(request)

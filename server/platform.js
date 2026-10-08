@@ -8,6 +8,7 @@ import { assertMeetingStorageContract } from './storage.js'
 import { verifyAuditChain } from './audit.js'
 import { exportFilename, renderMeetingRecordMarkdown } from './meeting-export.js'
 import { InMemoryChatRepository, InMemoryCommitmentRegistry, InMemoryEmbeddingRepository } from './adapters/in-memory.js'
+import { assertionsFromIntelligence } from './speech.js'
 import { chatKeywords, keywordScore, MAX_CHAT_EXCERPT_TEXT, MAX_CHAT_EXCERPTS } from './chat.js'
 import { cosineSimilarity, embeddingTextHash } from './embeddings.js'
 import { checkGrounding, GUARDRAIL_CODES, keepValidCitations, prepareOutbound, validateQuestion } from './guardrails.js'
@@ -97,7 +98,7 @@ const SAFE_AUDIT_ACTIONS = new Set([
   'recording.process', 'recording.process.retry', 'recording.process.complete', 'recording.status', 'recording.delete',
   'recording.authorization.status', 'recording.list',
   'chat.ask', 'chat.history.read', 'chat.history.clear', 'chat.guardrail', 'chat.turn.delete', 'chat.history.expire',
-  'speaker.map', 'speaker.unmap', 'speaker.dispute',
+  'speaker.map', 'speaker.unmap', 'speaker.dispute', 'recording.summary.regenerate',
   'transcript.append', 'knowledge.assertions.add', 'knowledge.read', 'knowledge.search',
   'ai.retrieve', 'privacy-access.read', 'meeting.export', 'retention.expire',
   'commitment.query',
@@ -524,7 +525,7 @@ function validatedManualAssertionEnvelope(value) {
 export class MeetingIntelligencePlatform {
   #tenantTransaction = null
 
-  constructor({ storage = null, meetings, knowledge, recordings, audit, policy, speechProcessor, commitments, chat, chatAnswerer = null, embeddings, embedder = null, chatQuota = null, chatRetentionDays = DEFAULT_CHAT_RETENTION_DAYS, teamsIntegration = new MicrosoftTeamsIntegrationAdapter(), clock = { now: () => new Date() }, authorizationTtlMs = 300000, maxRecordingBytes = 10485760, acceptedMimeTypes = RECORDING_MIME_TYPES, schedule = queueMicrotask }) {
+  constructor({ storage = null, meetings, knowledge, recordings, audit, policy, speechProcessor, commitments, chat, chatAnswerer = null, embeddings, embedder = null, summarizer = null, chatQuota = null, chatRetentionDays = DEFAULT_CHAT_RETENTION_DAYS, teamsIntegration = new MicrosoftTeamsIntegrationAdapter(), clock = { now: () => new Date() }, authorizationTtlMs = 300000, maxRecordingBytes = 10485760, acceptedMimeTypes = RECORDING_MIME_TYPES, schedule = queueMicrotask }) {
     // The `storage` bundle is the production persistence seam. Keeping the
     // individual repositories supported preserves existing local tests and
     // transports during the incremental migration, while a real deployment
@@ -591,7 +592,7 @@ export class MeetingIntelligencePlatform {
     embeddings ??= new InMemoryEmbeddingRepository()
     invariant(meetings && knowledge && audit && commitments, 'INVALID_STORAGE_ADAPTER', 'Canonical meeting, knowledge, audit, and commitment repositories are required')
     const outbox = scopedOutbox
-    Object.assign(this, { meetings, knowledge, recordings, audit, policy, speechProcessor, commitments, chat, chatAnswerer, embeddings, embedder, chatQuota, chatRetentionDays, outbox, teamsIntegration, clock, authorizationTtlMs, maxRecordingBytes, acceptedMimeTypes: Object.freeze([...acceptedMimeTypes]), schedule })
+    Object.assign(this, { meetings, knowledge, recordings, audit, policy, speechProcessor, commitments, chat, chatAnswerer, embeddings, embedder, summarizer, chatQuota, chatRetentionDays, outbox, teamsIntegration, clock, authorizationTtlMs, maxRecordingBytes, acceptedMimeTypes: Object.freeze([...acceptedMimeTypes]), schedule })
   }
 
   #outboxKey(type, aggregateId, revision) {
@@ -918,13 +919,22 @@ export class MeetingIntelligencePlatform {
     return commitment
   }
 
-  #normalizeProcessorResult(result, recording, rosterEvidence, participantIds = []) {
+  #normalizeProcessorResult(result, recording, rosterEvidence, participantIds = [], { assertionPrefix = `${recording.id}-assertion-` } = {}) {
     invariant(result && Array.isArray(result.segments) && Array.isArray(result.assertions), 'INVALID_PROCESSOR_RESULT', 'Processor result is invalid')
     invariant(result.segments.length <= MAX_PROCESSOR_SEGMENTS && result.assertions.length <= MAX_PROCESSOR_ASSERTIONS, 'INVALID_PROCESSOR_RESULT', 'Processor result exceeds its size limits')
     const bindings = this.#rosterBindings(rosterEvidence)
     const descriptor = this.#processorDescriptor(result.processor)
     const model = this.#canonicalModel(descriptor, result.model)
     const rawSegmentIds = new Map()
+    const rawSegmentText = new Map(result.segments.map((item) => [item?.id, String(item?.text ?? '')]))
+    // An action's owner must be named in the transcript lines it cites ("Sam,
+    // can you..."). Who spoke a line, even a confirmed speaker, never makes them
+    // the owner (user decision 2026-10-07); this is enforced here, not only by
+    // the summarizer's instructions.
+    const namedIn = (citations) => {
+      const cited = citations.map((id) => rawSegmentText.get(id) ?? '').join(' ').toLowerCase()
+      return participantIds.filter((id) => new RegExp(`(^|[^a-z0-9])${id.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`).test(cited))
+    }
     const diarizationLabels = new Map()
     const canonicalDiarizationLabel = (rawLabel) => {
       if (rawLabel === UNATTRIBUTED_SPEAKER_LABEL) return UNATTRIBUTED_SPEAKER_LABEL
@@ -968,12 +978,12 @@ export class MeetingIntelligencePlatform {
       }
       const kind = PROCESSOR_ASSERTION_KINDS.has(item.kind) ? item.kind : 'finding'
       assertions.push(knowledgeAssertion({
-        id: `${recording.id}-assertion-${assertions.length + 1}`, tenantId: recording.tenantId, meetingId: recording.meetingId,
+        id: `${assertionPrefix}${assertions.length + 1}`, tenantId: recording.tenantId, meetingId: recording.meetingId,
         kind,
         text: item.text.trim(),
         citations: [...new Set(item.citations.map((id) => rawSegmentIds.get(id)))],
         provenance: this.#canonicalProcessorAssertionProvenance(descriptor, recording, model),
-        ...(kind === 'action' ? { commitment: this.#canonicalProcessorCommitment(item.commitment, participantIds, (raw) => diarizationLabels.get(raw) ?? null) } : {}),
+        ...(kind === 'action' ? { commitment: this.#canonicalProcessorCommitment(item.commitment, namedIn(item.citations), (raw) => diarizationLabels.get(raw) ?? null) } : {}),
       }))
     }
     return {
@@ -1000,6 +1010,7 @@ export class MeetingIntelligencePlatform {
         record.error = POLICY_REVOKED
         record.processor = null
         record.dispositionReason = this.#safePolicyReason(reason)
+        record.summaryHistory = []
         await recordings.save(record)
         if (DELETE_BYTES_ON_REVOKE.has(meetingRecord.retentionState)) {
           if (transaction) await recordings.clearContent(record.id)
@@ -1489,9 +1500,110 @@ export class MeetingIntelligencePlatform {
         const own = knowledgeForRecording((await this.knowledge.forMeeting(actor.tenantId, meetingId)), recording.id)
         Object.assign(output, withSpeakerNames(own, new Map([[recording.id, speakerMapOf(recording)]]), meetingRecord.participantIds))
         output.speakers = this.#speakersView(actor, meetingRecord, recording, own.segments)
+        output.summaryVersions = Object.freeze({
+          current: recording.summaryVersion ?? 1,
+          generatedAt: recording.summaryGeneratedAt ?? recording.uploadedAt ?? null,
+          canRegenerate: Boolean(this.summarizer) && meetingRecord.organizerId === actor.userId,
+          provider: this.summarizer?.providerName ?? null,
+          history: Object.freeze((recording.summaryHistory ?? []).slice().reverse()),
+        })
       }
       return output
     }, recordingId))
+  }
+
+  // Rewrites one recording's summary, decisions, risks, questions, and action
+  // plan from its stored transcript (CAP-10 recomputation). Organizer only.
+  // Confirmed speaker names are included (user decision 2026-10-07); the
+  // result passes the same normalization as first processing, gets new
+  // versioned IDs, and the previous version is kept (last three) for
+  // comparison. The summarizer call runs before the audited transaction.
+  async regenerateSummary(input, meetingId, recordingId, correlationId = randomUUID()) {
+    const actor = principal(input)
+    let prepared
+    try {
+      prepared = await this.#prepareRegeneration(actor, meetingId, recordingId)
+    } catch (error) {
+      return this.#audited(actor, correlationId, 'recording.summary.regenerate', meetingId, async () => { throw error }, recordingId)
+    }
+    return (await this.#audited(actor, correlationId, 'recording.summary.regenerate', meetingId, async () => {
+      const publish = async (transaction = null) => {
+        const recordings = transaction?.recordings ?? this.recordings
+        const knowledge = transaction?.knowledge ?? this.knowledge
+        const commitments = transaction?.commitments ?? this.commitments
+        const recording = transaction ? await recordings.get(recordingId) : await recordings.get(actor.tenantId, recordingId)
+        invariant(recording?.state === 'completed' && (recording.summaryVersion ?? 1) === prepared.fromVersion, 'SUMMARY_CHANGED', 'The recording changed while its summary was being rewritten; try again', 409)
+        recording.summaryHistory = [...(recording.summaryHistory ?? []), prepared.previous].slice(-3)
+        recording.summaryVersion = prepared.version
+        recording.summaryGeneratedAt = this.clock.now().toISOString()
+        recording.withheldAssertions = prepared.result.withheldAssertions
+        await this.#replaceRecordingKnowledge(recording, { segments: prepared.segments, assertions: prepared.result.assertions }, { transaction, knowledge, commitments })
+        await recordings.save(recording)
+        const meetingRecord = transaction ? await transaction.meetings.get(meetingId) : await this.#meeting(actor.tenantId, meetingId)
+        await this.#emitKnowledgeChange(meetingRecord, `recording:${recording.id}:summary-v${prepared.version}`, { commitmentsChanged: true, transaction, knowledge, commitments })
+        return view(recording)
+      }
+      const recording = this.#tenantTransaction ? await this.#tenantTransaction(actor.tenantId, publish) : await publish()
+      return Object.freeze({ recording, version: prepared.version })
+    }, recordingId))
+  }
+
+  async #prepareRegeneration(actor, meetingId, recordingId) {
+    const meetingRecord = await this.#meeting(actor.tenantId, meetingId)
+    const recording = await this.#recording(actor, meetingId, recordingId, true)
+    invariant(recording.state === 'completed', 'RECORDING_NOT_COMPLETED', 'Only a processed recording can be summarized again', 409)
+    invariant(this.summarizer, 'SUMMARY_NOT_CONFIGURED', 'Summaries are not configured on this server', 409)
+    this.policy.require(this.#regenerationPolicyDecision(meetingRecord, recording))
+    const own = knowledgeForRecording(await this.knowledge.forMeeting(actor.tenantId, meetingId), recording.id)
+    invariant(own.segments.length > 0, 'NO_MEETING_RECORD', 'This recording has no transcript to summarize', 409)
+    // The stored transcript must be exactly what first processing produced, so
+    // the summarizer's citations map back onto the same segment IDs.
+    invariant(own.segments.every((segment, index) => segment.id === `${recording.id}-segment-${index + 1}`), 'REGENERATION_UNAVAILABLE', 'This recording\'s transcript cannot be summarized again', 409)
+    const named = withSpeakerNames({ segments: own.segments }, new Map([[recording.id, speakerMapOf(recording)]]), meetingRecord.participantIds).segments
+    const raw = named.map((segment, index) => ({
+      id: `S${index + 1}`, startMs: segment.startMs, endMs: segment.endMs, text: segment.text,
+      diarizationLabel: segment.diarizationLabel, identityConfidence: segment.identityConfidence ?? null,
+      confirmedParticipantId: segment.speaker?.participantId ?? null,
+    }))
+    let intelligence
+    try {
+      intelligence = await this.summarizer.extract({ segments: raw, participantIds: [...meetingRecord.participantIds], meetingDate: String(recording.uploadedAt ?? this.clock.now().toISOString()).slice(0, 10) })
+    } catch {
+      throw new DomainError('SUMMARY_FAILED', 'The summary could not be rewritten; the current version is unchanged', 502)
+    }
+    const fromVersion = recording.summaryVersion ?? 1
+    const version = fromVersion + 1
+    const result = this.#normalizeProcessorResult(
+      { segments: raw.map(({ confirmedParticipantId, ...segment }) => segment), assertions: assertionsFromIntelligence(intelligence), processor: recording.processor, model: this.summarizer.model ?? null },
+      recording, this.#authorizedRosterEvidence(meetingRecord), meetingRecord.participantIds,
+      { assertionPrefix: `${recording.id}-v${version}-assertion-` },
+    )
+    const previous = {
+      version: fromVersion,
+      generatedAt: recording.summaryGeneratedAt ?? recording.uploadedAt ?? null,
+      model: own.assertions.find((item) => typeof item.provenance?.model === 'string')?.provenance.model ?? null,
+      items: own.assertions.map((item) => ({ kind: item.kind, text: item.text })),
+    }
+    return { fromVersion, version, result, previous, segments: own.segments }
+  }
+
+  // Regeneration processes audio already captured with consent and records
+  // nothing new, so it does not require a fresh consent window. It still
+  // stops when the meeting is no longer active (including legal hold), is
+  // not recordable, its policy changed since the recording, or any required
+  // participant's latest consent decision is not "granted" (a withdrawal or
+  // decline). Decision by Claude, 2026-10-07, logged in the handoff.
+  #regenerationPolicyDecision(meetingRecord, recording) {
+    const deny = (code, reason) => ({ allowed: false, code, reason })
+    if (meetingRecord.retentionState !== 'active') return deny('RETENTION_RESTRICTED', 'Meeting is not active')
+    if (this.policy.retentionExpired({ meeting: meetingRecord, now: this.clock.now() })) return deny('RETENTION_EXPIRED', 'Meeting content has reached its retention limit')
+    if (NEVER_RECORD_CATEGORIES.has(meetingRecord.classification)) return deny('NEVER_RECORD', 'Meeting classification prohibits recording')
+    for (const participantId of meetingRecord.requiredParticipantIds ?? meetingRecord.participantIds) {
+      const evidence = (meetingRecord.consentEvidence ?? []).filter((item) => item.participantId === participantId).at(-1)
+      if (evidence?.decision !== 'granted') return deny('CONSENT_NOT_GRANTED', 'A required participant has not granted consent, or withdrew it')
+    }
+    if (!this.#leaseMatchesCurrentPolicy(meetingRecord, recording)) return deny('RECORDING_POLICY_CHANGED', 'Recording authorization no longer matches current policy')
+    return { allowed: true, reason: 'Regeneration allowed' }
   }
 
   // Names a speaker. The organizer may name or correct any label; any other
@@ -1614,7 +1726,9 @@ export class MeetingIntelligencePlatform {
         for (const recording of records) {
           if (transaction) await recordings.clearContent(recording.id)
           else await recordings.clearContent(tenantId, recording.id)
-          recording.state = 'deleted'; recording.progress = 100; await recordings.save(recording)
+          // The tombstone keeps no earlier summary versions or speaker names.
+          recording.state = 'deleted'; recording.progress = 100; recording.summaryHistory = []; delete recording.speakerMap
+          await recordings.save(recording)
         }
         if (transaction) {
           await knowledge.clearMeeting(meetingId)

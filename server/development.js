@@ -98,12 +98,12 @@ export function createSpeechProcessor({ mode = process.env.MEETING_PROCESSOR ?? 
 
 // `storage` defaults to in-memory so tests never touch disk; the local servers
 // pass durable SQLite storage (see server/adapters/sqlite.js).
-export async function createDevelopmentPlatform({ speechProcessor = createSpeechProcessor(), storage = createInMemoryMeetingStorage(), chatAnswerer = createChatAnswerer(), embedder = createEmbedder(), env = process.env } = {}) {
+export async function createDevelopmentPlatform({ speechProcessor = createSpeechProcessor(), storage = createInMemoryMeetingStorage(), chatAnswerer = createChatAnswerer(), embedder = createEmbedder(), summarizer = createMeetingIntelligence(process.env), env = process.env } = {}) {
   // Chat guardrail and memory settings: a daily question limit per user and
   // how long saved chat is kept.
   const positive = (value, fallback) => (Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : fallback)
   const platform = new MeetingIntelligencePlatform({
-    storage, speechProcessor, chatAnswerer, embedder,
+    storage, speechProcessor, chatAnswerer, embedder, summarizer,
     chatQuota: new ChatQuota({ limit: positive(env.MEETING_CHAT_DAILY_LIMIT, DEFAULT_DAILY_QUESTION_LIMIT) }),
     chatRetentionDays: positive(env.MEETING_CHAT_RETENTION_DAYS, DEFAULT_CHAT_RETENTION_DAYS),
     policy: new PolicyEngine({ retentionPolicies: DEVELOPMENT_RETENTION_POLICIES }),

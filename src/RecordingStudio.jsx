@@ -190,6 +190,50 @@ export function SpeakerPanel({ speakers, meetingId, recordingId, participants = 
   </section>
 }
 
+const VERSION_KINDS = [["decision", "Decisions"], ["action", "Actions"], ["risk", "Risks"], ["question", "Open questions"]]
+// Two items are the same when they share most of their words, so a reworded
+// decision is not reported as one dropped and one new.
+const wordsOf = (text) => new Set(String(text ?? "").toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2))
+const similar = (a, b) => { const x = wordsOf(a); const y = wordsOf(b); const shared = [...x].filter((word) => y.has(word)).length; return shared / Math.max(1, new Set([...x, ...y]).size) >= 0.5 }
+
+// Summary versions (CAP-10). The organizer can rewrite a processed recording's
+// summary and action plan; confirmed speaker names are included. The previous
+// version is kept, and the differences are listed so a dropped decision is
+// visible rather than silently gone.
+export function SummaryVersions({ versions, assertions = [], meetingId, recordingId, onChanged = null }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  if (!versions || !recordingId) return null
+  const previous = versions.history?.[0] ?? null
+  const changes = previous ? VERSION_KINDS.map(([kind, title]) => {
+    const now = assertions.filter((item) => item.kind === kind).map((item) => item.text)
+    const before = previous.items.filter((item) => item.kind === kind).map((item) => item.text)
+    return { title, added: now.filter((text) => !before.some((other) => similar(other, text))), removed: before.filter((text) => !now.some((other) => similar(other, text))) }
+  }).filter((group) => group.added.length || group.removed.length) : []
+  const regenerate = async () => {
+    if (!window.confirm(`Rewrite the summary, decisions, risks, questions, and action plan?\n\nThe transcript, with any confirmed speaker names, is sent to ${versions.provider ?? "the configured provider"}. The current version is kept for comparison.`)) return
+    setBusy(true); setError("")
+    try {
+      const response = await fetch(`/meetings/${meetingId}/recordings/${recordingId}/regenerate`, { method: "POST", headers: { ...authHeaders(), "content-type": "application/json" }, body: "{}" })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body?.error?.message ?? "The summary could not be rewritten.")
+      const refreshed = await fetch(`/meetings/${meetingId}/recordings/${recordingId}`, { headers: authHeaders() })
+      if (refreshed.ok) onChanged?.(await refreshed.json())
+    } catch (cause) { setError(cause.message) } finally { setBusy(false) }
+  }
+  const when = versions.generatedAt ? new Date(versions.generatedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null
+  return <div className="summary-versions">
+    <div className="summary-version-bar"><small>Version {versions.current}{when ? ` · ${versions.current > 1 ? "rewritten" : "written"} ${when}` : ""}</small>{versions.canRegenerate && <button disabled={busy} onClick={regenerate}>{busy ? "Rewriting…" : "Rewrite summary"}</button>}</div>
+    {previous && <details className="summary-changes"><summary>What changed since version {previous.version}</summary>
+      {changes.length === 0 ? <p>Only wording changed: no decision, action, risk, or question was added or dropped.</p> : changes.map((group) => <div key={group.title}><b>{group.title}</b>
+        {group.added.map((text) => <p key={`+${text}`} className="summary-added">New: {text}</p>)}
+        {group.removed.map((text) => <p key={`-${text}`} className="summary-removed">No longer listed: {text}</p>)}
+      </div>)}
+    </details>}
+    {error && <p className="intelligence-note">{error}</p>}
+  </div>
+}
+
 export function MeetingIntelligenceResult({ result, onDownload = null, participants = DEFAULT_PARTICIPANTS, meetingId = null, onChanged = null }) {
   const segments = result?.segments ?? []
   const assertions = result?.assertions ?? []
@@ -206,6 +250,7 @@ export function MeetingIntelligenceResult({ result, onDownload = null, participa
     <p className="stage-index">{label}{summaryModel ? ` · ${summaryModel.toUpperCase()}` : ""} · COMPLETE</p>
     <h2>{TRANSCRIPT_ONLY_MODES.has(mode) ? "Meeting transcript" : "Cited meeting intelligence"}</h2>
     {onDownload && segments.length > 0 && <button className="copper-button result-download" onClick={onDownload}>Download meeting record</button>}
+    {meetingId && !TRANSCRIPT_ONLY_MODES.has(mode) && <SummaryVersions versions={result?.summaryVersions} assertions={assertions} meetingId={meetingId} recordingId={result?.recording?.id} onChanged={onChanged} />}
     {TRANSCRIPT_ONLY_MODES.has(mode) && <p className="intelligence-note">Summary and action plan are not configured on this server. Set <code>OPENAI_API_KEY</code> or <code>ANTHROPIC_API_KEY</code> and restart it to generate them.</p>}
     {segments.length === 0 && <p className="intelligence-note">No speech was recognized in this recording.</p>}
     {withheld > 0 && <p className="intelligence-note">{withheld} generated {withheld === 1 ? "item was" : "items were"} withheld because {withheld === 1 ? "it" : "they"} could not be tied to this transcript.</p>}
@@ -215,7 +260,7 @@ export function MeetingIntelligenceResult({ result, onDownload = null, participa
         <div role="row" className="action-plan-head"><span role="columnheader">Action</span><span role="columnheader">Status</span><span role="columnheader">Owner</span><span role="columnheader">Due</span><span role="columnheader">Source</span></div>
         {actions.map((action) => <div role="row" key={action.id}><b role="cell">{action.text}</b><span role="cell" className={`action-agreement ${action.commitment?.agreement ?? "unrecorded"}`}>{AGREEMENT_LABELS[action.commitment?.agreement] ?? "Not recorded"}</span><span role="cell">{actionOwner(action.commitment, participants)}</span><span role="cell">{dueDate(action.commitment?.deadline)}</span><small role="cell">{sources(action.citations)}</small></div>)}
       </div>
-      <small className="action-plan-note">Committed means someone agreed to the task; proposed means it was suggested but nobody took it on. Owners and due dates appear only when stated in the meeting. Speaker labels are anonymous and unverified.</small>
+      <small className="action-plan-note">Committed means someone agreed to the task; proposed means it was suggested but nobody took it on. Owners and due dates appear only when stated in the meeting. Speaker labels are anonymous unless a participant confirmed them, and speaking never makes someone the owner.</small>
     </section>}
     {[["decision", "Decisions"], ["risk", "Risks & blockers"], ["question", "Open questions"], ["finding", "Findings"]].map(([kind, title]) => ofKind(kind).length > 0 && <div className="assertion-list" key={kind}>{ofKind(kind).map((assertion) => <article key={assertion.id}><span>{title}</span><b>{assertion.text}</b><small>Sources {sources(assertion.citations)}</small></article>)}</div>)}
     {meetingId && <SpeakerPanel speakers={result?.speakers} meetingId={meetingId} recordingId={result?.recording?.id} participants={participants} onChanged={onChanged} />}
@@ -570,7 +615,7 @@ export function RecordingStudio({ onBack, meeting = { id: DEFAULT_MEETING_ID, ti
         {state.phase === "recording" && <div className="withdraw-box sensitive-box"><b>Topic turned sensitive?</b><p>Stop now. The audio captured so far is discarded, the stop time is recorded, and capture can resume only after a new policy check.</p><button onClick={sensitiveStop}>Stop and discard: sensitive topic</button></div>}
         {state.phase === "recording" && <div className="withdraw-box"><b>Consent changed?</b><p>Any participant can withdraw. Capture stops immediately and audio is cleared.</p>{participants.map((person) => <button key={person.id} onClick={() => setConsent(person.id, "withdrawn")}>Withdraw for {person.name}</button>)}</div>}
         <MeetingRecordingsList recordings={meetingRecordings} currentRecordingId={state.recordingId} viewingId={earlier?.id ?? null} onOpen={openEarlier} />
-        <small>{state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "Audio is transcribed on this machine by Whisper and never leaves it. When configured, only the transcript text and anonymous speaker labels are sent to the configured AI provider (OpenAI or Claude) to write the cited summary and action plan." : "Local deterministic processor is a clearly labeled fake. It demonstrates provenance, identity confidence, and citations; it does not claim real STT or diarization."}</small>
+        <small>{state.allowedMimeTypes.includes(SPEECH_WAV_MIME_TYPE) ? "Audio is transcribed on this machine by Whisper and never leaves it. When configured, only the transcript text and anonymous speaker labels are sent to the configured AI provider (OpenAI or Claude) to write the cited summary and action plan; when an organizer rewrites a summary, speaker names a participant confirmed are sent too." : "Local deterministic processor is a clearly labeled fake. It demonstrates provenance, identity confidence, and citations; it does not claim real STT or diarization."}</small>
       </aside>
     </section>
     {earlier && <section className="earlier-recording" ref={earlierRef} aria-label={`Recording ${earlier.index + 1} results`}>
